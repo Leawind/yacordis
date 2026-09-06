@@ -77,7 +77,9 @@ fn panicking_disposer_does_not_block_remaining_disposers() {
                     ctx.effect("eff/after", {
                         let log = log.clone();
                         move |_| {
-                            Ok(Some(Box::new(move || push(&log, "after:dispose")) as Disposer))
+                            Ok(Some(
+                                Box::new(move || push(&log, "after:dispose")) as Disposer
+                            ))
                         }
                     })?;
                     // Registered last → disposed first: panics.
@@ -115,9 +117,12 @@ fn panicking_middleware_aborts_update_with_error() {
 
     // The panic must surface as an error from update(), never as a value
     // or a host crash, and leave config/state untouched.
-    let err = handle.update(json!({ "v": 2 })).expect_err("update must fail");
+    let err = handle
+        .update(json!({ "v": 2 }))
+        .expect_err("update must fail");
     assert!(
-        err.to_string().contains("middleware panicked: middleware boom"),
+        err.to_string()
+            .contains("middleware panicked: middleware boom"),
         "{err}"
     );
     assert_eq!(handle.config(), Some(json!({ "v": 1 })));
@@ -137,15 +142,22 @@ fn panicking_effect_setup_fails_the_fiber_and_reverts_collected_effects() {
             move |ctx: &Context, _: &Value| -> PluginResult {
                 ctx.effect("eff/before", {
                     let log = log.clone();
-                    move |_| Ok(Some(Box::new(move || push(&log, "before:dispose")) as Disposer))
+                    move |_| {
+                        Ok(Some(
+                            Box::new(move || push(&log, "before:dispose")) as Disposer
+                        ))
+                    }
                 })?;
                 if !recover.load(std::sync::atomic::Ordering::SeqCst) {
                     // A setup panic propagates out of ctx.effect (the
                     // collected disposers are reverted on the way), then
                     // the body panic fails the fiber.
-                    ctx.effect("eff/boom", |_| -> Result<EffectOutcome, Box<dyn std::error::Error + Send + Sync>> {
-                        panic!("setup boom");
-                    })?;
+                    ctx.effect(
+                        "eff/boom",
+                        |_| -> Result<EffectOutcome, Box<dyn std::error::Error + Send + Sync>> {
+                            panic!("setup boom");
+                        },
+                    )?;
                 }
                 Ok(())
             },
@@ -166,7 +178,10 @@ fn panicking_effect_setup_fails_the_fiber_and_reverts_collected_effects() {
     handle.update(json!(null)).expect("update recovers");
     assert_eq!(handle.state(), FiberState::Active);
     assert_eq!(
-        logged(&log).iter().filter(|e| *e == "before:dispose").count(),
+        logged(&log)
+            .iter()
+            .filter(|e| *e == "before:dispose")
+            .count(),
         1,
         "only the failed round's effect may have been disposed: {:?}",
         logged(&log)

@@ -62,19 +62,31 @@ fn declared_cycle_is_reported_once_and_clears_when_broken() {
     // next one needs. Nothing can ever run.
     let a = ctx
         .plugin(
-            Declared { name: "A", inject: Inject::required(&["b"]), provides: vec!["a"] },
+            Declared {
+                name: "A",
+                inject: Inject::required(&["b"]),
+                provides: vec!["a"],
+            },
             json!(null),
         )
         .expect("install A");
     let b = ctx
         .plugin(
-            Declared { name: "B", inject: Inject::required(&["c"]), provides: vec!["b"] },
+            Declared {
+                name: "B",
+                inject: Inject::required(&["c"]),
+                provides: vec!["b"],
+            },
             json!(null),
         )
         .expect("install B");
     let c = ctx
         .plugin(
-            Declared { name: "C", inject: Inject::required(&["a"]), provides: vec!["c"] },
+            Declared {
+                name: "C",
+                inject: Inject::required(&["a"]),
+                provides: vec!["c"],
+            },
             json!(null),
         )
         .expect("install C");
@@ -106,12 +118,17 @@ fn declared_cycle_is_reported_once_and_clears_when_broken() {
     // Disposing one member breaks the loop: no more report, even though
     // B is still pending behind C's disappearance (missing != cycle).
     c.dispose();
-    assert!(ctx.dependency_cycles().is_empty(), "{:?}", ctx.dependency_cycles());
+    assert!(
+        ctx.dependency_cycles().is_empty(),
+        "{:?}",
+        ctx.dependency_cycles()
+    );
     assert_eq!(warnings(&capture), 1);
 
     // A real provider satisfies B; A stays pending on B's *declared* (but
     // never fulfilled) provide — still not a cycle.
-    ctx.provide_raw("c", Arc::new(json!({}))).expect("provide c");
+    ctx.provide_raw("c", Arc::new(json!({})))
+        .expect("provide c");
     assert!(b.wait_for(FiberState::Active, std::time::Duration::from_secs(5)));
     assert_eq!(a.state(), FiberState::Pending);
     assert!(ctx.dependency_cycles().is_empty());
@@ -122,7 +139,11 @@ fn declared_cycle_is_reported_once_and_clears_when_broken() {
     // "a" closes a new loop with A.
     let d = ctx
         .plugin(
-            Declared { name: "D", inject: Inject::required(&["a"]), provides: vec!["b"] },
+            Declared {
+                name: "D",
+                inject: Inject::required(&["a"]),
+                provides: vec!["b"],
+            },
             json!(null),
         )
         .expect("install D");
@@ -138,14 +159,21 @@ fn self_claim_on_own_missing_dependency_is_reported() {
     let ctx = Context::new();
     let solo = ctx
         .plugin(
-            Declared { name: "solo", inject: Inject::required(&["x"]), provides: vec!["x"] },
+            Declared {
+                name: "solo",
+                inject: Inject::required(&["x"]),
+                provides: vec!["x"],
+            },
             json!(null),
         )
         .expect("install solo");
     assert_eq!(solo.state(), FiberState::Pending);
 
     let cycles = ctx.dependency_cycles();
-    assert_eq!(cycles, vec![vec![format!("solo#{}", solo.id().expect("live"))]]);
+    assert_eq!(
+        cycles,
+        vec![vec![format!("solo#{}", solo.id().expect("live"))]]
+    );
 }
 
 #[test]
@@ -165,7 +193,11 @@ fn healthy_and_merely_missing_dependencies_are_not_cycles() {
         .expect("install provider");
     let consumer = ctx
         .plugin(
-            Declared { name: "A", inject: Inject::required(&["b"]), provides: vec!["a"] },
+            Declared {
+                name: "A",
+                inject: Inject::required(&["b"]),
+                provides: vec!["a"],
+            },
             json!(null),
         )
         .expect("install consumer");
@@ -175,7 +207,11 @@ fn healthy_and_merely_missing_dependencies_are_not_cycles() {
     // Pending on a dependency nobody claims: missing, not cyclic.
     let waiting = ctx
         .plugin(
-            Declared { name: "wait", inject: Inject::required(&["zz"]), provides: vec![] },
+            Declared {
+                name: "wait",
+                inject: Inject::required(&["zz"]),
+                provides: vec![],
+            },
             json!(null),
         )
         .expect("install waiting");
@@ -186,11 +222,19 @@ fn healthy_and_merely_missing_dependencies_are_not_cycles() {
     // provides would satisfy a third plugin.
     let third = ctx
         .plugin(
-            Declared { name: "third", inject: Inject::required(&["a"]), provides: vec![] },
+            Declared {
+                name: "third",
+                inject: Inject::required(&["a"]),
+                provides: vec![],
+            },
             json!(null),
         )
         .expect("install third");
-    assert_eq!(third.state(), FiberState::Pending, "declared but never provided");
+    assert_eq!(
+        third.state(),
+        FiberState::Pending,
+        "declared but never provided"
+    );
     assert!(ctx.dependency_cycles().is_empty());
     provider.dispose();
 }

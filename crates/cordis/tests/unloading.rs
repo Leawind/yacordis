@@ -57,7 +57,8 @@ fn registration_during_unload_is_rejected_without_leaks() {
                     Ok(Some(Box::new(move || {
                         let mut results = attempts.lock().unwrap();
                         let r = ctx.on("late", |_, _| None);
-                        results.push(("on", matches!(&r, Err(CordisError::InactiveContext { .. }))));
+                        results
+                            .push(("on", matches!(&r, Err(CordisError::InactiveContext { .. }))));
                         let r = ctx.effect("late-eff", |_| {
                             Ok::<Option<Disposer>, Box<dyn std::error::Error + Send + Sync>>(None)
                         });

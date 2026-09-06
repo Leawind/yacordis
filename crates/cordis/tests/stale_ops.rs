@@ -85,7 +85,11 @@ fn queued_reload_whose_premise_vanished_is_dropped() {
     // queue drains, the Reload's epoch premise is gone.
     assert!(provider.dispose());
     assert_eq!(consumer.state(), FiberState::Pending);
-    assert_eq!(body_runs.load(Ordering::SeqCst), 1, "stale Reload must not re-run the body");
+    assert_eq!(
+        body_runs.load(Ordering::SeqCst),
+        1,
+        "stale Reload must not re-run the body"
+    );
     let trace = cordis::test_support::lifecycle_trace_fiber(consumer.id().expect("live fiber"));
     assert!(
         trace.iter().any(|line| line.contains("STALE")),

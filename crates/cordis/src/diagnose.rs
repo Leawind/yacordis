@@ -16,7 +16,7 @@
 //! no edges, so a group is only reported when its members are genuinely
 //! stuck, not merely pending behind a slow provider.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::context::Core;
@@ -118,8 +118,7 @@ pub(crate) fn dependency_cycles(core: &Arc<Core>) -> Vec<Vec<String>> {
     let mut cycles: Vec<Vec<String>> = components
         .into_iter()
         .filter(|component| {
-            component.len() > 1
-                || edges[component[0]].contains(&component[0]) // self-loop
+            component.len() > 1 || edges[component[0]].contains(&component[0]) // self-loop
         })
         .map(|mut component| {
             component.sort_unstable();
