@@ -285,6 +285,7 @@ fn root_ctx(core: &Arc<Core>) -> Context {
     Context {
         core: core.clone(),
         fiber: core.root_weak(),
+        isolate: Arc::new(crate::context::IsolateMap::default()),
     }
 }
 

@@ -52,6 +52,7 @@ pub(crate) struct ServiceImpl {
     pub value: Mutex<Arc<dyn Any + Send + Sync>>,
     pub owner: Weak<Fiber>,
     pub owner_name: String,
+    pub label: crate::context::IsolateLabel,
 }
 
 impl ServiceImpl {
@@ -67,16 +68,14 @@ pub(crate) struct FiberInner {
     /// declaration order, or `None` when a required dep is missing.
     pub epoch: Option<Vec<u64>>,
     pub error: Option<PluginError>,
-    /// Checked dependency impls (`_store` in v4).
+    /// Checked dependency impls, keyed by name (labels are fixed per
+    /// fiber, so the name suffices within one fiber).
     pub dep_store: HashMap<String, Arc<ServiceImpl>>,
-    /// Visibility snapshot used by context service resolution
-    /// (`store` in v4).
-    pub visible: HashMap<String, Arc<ServiceImpl>>,
     /// Effects owned by this fiber, disposed in reverse order.
     pub batches: Vec<EffectHandle>,
     /// Services provided during the current body run, notified on
     /// activation.
-    pub provided: Vec<String>,
+    pub provided: Vec<(String, crate::context::IsolateLabel)>,
     pub unloading: bool,
     pub disposed: bool,
 }
@@ -97,6 +96,8 @@ pub(crate) struct Fiber {
     /// Declared dependencies, cached at install (the plugin trait is
     /// queried exactly once).
     inject: Inject,
+    /// The isolation group map this fiber was installed under.
+    pub(crate) isolate: Arc<crate::context::IsolateMap>,
 }
 
 #[derive(Default)]
@@ -121,7 +122,6 @@ fn fresh_inner(state: FiberState, config: Value) -> FiberInner {
         },
         error: None,
         dep_store: HashMap::new(),
-        visible: HashMap::new(),
         batches: Vec::new(),
         provided: Vec::new(),
         unloading: false,
@@ -142,11 +142,13 @@ impl Fiber {
             inner: Mutex::new(fresh_inner(FiberState::Active, Value::Null)),
             schedule: Mutex::new(ScheduleState::default()),
             inject: Inject::none(),
+            isolate: Arc::new(crate::context::IsolateMap::default()),
         })
     }
 
     pub(crate) fn install(
         core: &Arc<Core>,
+        isolate: Arc<crate::context::IsolateMap>,
         parent: Weak<Fiber>,
         plugin: Arc<dyn Plugin>,
         config: Value,
@@ -164,6 +166,7 @@ impl Fiber {
             inner: Mutex::new(fresh_inner(FiberState::Pending, config)),
             schedule: Mutex::new(ScheduleState::default()),
             inject,
+            isolate,
         })
     }
 
@@ -197,22 +200,14 @@ impl Fiber {
         self.inner.lock().unwrap().state
     }
 
-    /// Record a service provided from this fiber: visible immediately,
-    /// queued for activation notify while a body is still running.
-    pub(crate) fn note_provided(&self, name: &str, impl_: Arc<ServiceImpl>) {
+    /// Record a service provided from this fiber so activation notifies
+    /// its dependents (services provided while already active notify
+    /// immediately from `provide` itself).
+    pub(crate) fn note_provided(&self, name: &str, label: crate::context::IsolateLabel) {
         let mut inner = self.inner.lock().unwrap();
-        inner.visible.insert(name.to_owned(), impl_);
         if inner.state == FiberState::Pending {
-            inner.provided.push(name.to_owned());
+            inner.provided.push((name.to_owned(), label));
         }
-    }
-
-    pub(crate) fn visible(&self, name: &str) -> Option<Arc<ServiceImpl>> {
-        self.inner.lock().unwrap().visible.get(name).cloned()
-    }
-
-    pub(crate) fn drop_visible(&self, name: &str) {
-        self.inner.lock().unwrap().visible.remove(name);
     }
 
     pub(crate) fn refresh_ops(&self) -> Vec<(Arc<Fiber>, Op)> {
@@ -262,8 +257,9 @@ impl Fiber {
         &self.inject.entries
     }
 
-    /// Re-read the given services from the global store into `dep_store`.
-    /// Returns true if any relevant entry changed.
+    /// Re-read the given services (within this fiber's isolation group)
+    /// from the global store into `dep_store`. Returns true if any
+    /// relevant entry changed.
     pub(crate) fn check_impls(&self, core: &Arc<Core>, names: &[String]) -> bool {
         let inject: Vec<String> = self.inject_names().iter().map(|(n, _)| n.clone()).collect();
         let mut changed = false;
@@ -272,7 +268,8 @@ impl Fiber {
             if !inject.iter().any(|n| n == name) {
                 continue;
             }
-            let fresh = core.store_impl(name);
+            let label = self.ctx().isolate_label(name);
+            let fresh = core.store_impl(name, &label);
             match (inner.dep_store.get(name), fresh) {
                 (Some(old), Some(new)) if Arc::ptr_eq(old, &new) => {}
                 (_, Some(new)) => {
@@ -344,9 +341,6 @@ impl Fiber {
             if inner.disposed || inner.error.is_some() {
                 return;
             }
-            // Refresh the visibility snapshot from checked deps, as v4 does
-            // at the start of `_reload`.
-            inner.visible = inner.dep_store.clone();
             inner.provided.clear();
             (self.plugin.clone(), inner.config.clone())
         };
@@ -364,7 +358,7 @@ impl Fiber {
                     events::emit_status(core, self, old);
                 }
                 // Activate dependents waiting on the services we provide.
-                let provided: Vec<String> = {
+                let provided: Vec<(String, crate::context::IsolateLabel)> = {
                     let mut inner = self.inner.lock().unwrap();
                     std::mem::take(&mut inner.provided)
                 };
@@ -397,7 +391,6 @@ impl Fiber {
                 return;
             }
             inner.unloading = true;
-            inner.visible.clear();
             std::mem::take(&mut inner.batches)
         };
         self.log(core, LogLevel::Debug, "unloading");

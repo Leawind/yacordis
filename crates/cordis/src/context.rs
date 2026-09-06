@@ -2,13 +2,15 @@
 //!
 //! A `Context` is a cheap handle (clone it freely) pairing the shared
 //! [`Core`] with the fiber whose scope it belongs to. Service resolution
-//! walks the fiber parent chain — a plugin sees its own provided
-//! services, its ancestors', and finally the global store.
+//! is one rule: look up the name under this context's isolation label,
+//! and accept it when the provider is active or is the requesting fiber
+//! itself.
 
 use std::any::Any;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use serde_json::Value;
 
@@ -20,6 +22,64 @@ use crate::logger::{Logger, LoggerHandle, StderrLogger};
 use crate::plugin::{Inject, InjectClosure, Plugin};
 use crate::registry::{Registry, plugin_key};
 
+/// Identity of one isolation group for a service name. Labels compare by
+/// pointer identity; every [`Context::isolate`] derivation mints a fresh
+/// one, and everything outside any isolation shares the default label.
+#[derive(Clone, Debug)]
+pub struct IsolateLabel(Arc<()>);
+
+impl IsolateLabel {
+    pub(crate) fn shared() -> Self {
+        static SHARED: OnceLock<IsolateLabel> = OnceLock::new();
+        SHARED.get_or_init(|| IsolateLabel(Arc::new(()))).clone()
+    }
+
+    pub(crate) fn fresh() -> Self {
+        Self(Arc::new(()))
+    }
+}
+
+impl PartialEq for IsolateLabel {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl Eq for IsolateLabel {}
+impl Hash for IsolateLabel {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        Arc::as_ptr(&self.0).hash(state);
+    }
+}
+
+/// Name → label map, carried by contexts and captured by fibers at
+/// install time. Cheap to clone; deriving inserts one fresh label.
+#[derive(Clone, Default)]
+pub(crate) struct IsolateMap {
+    labels: HashMap<String, IsolateLabel>,
+}
+
+impl IsolateMap {
+    pub(crate) fn label(&self, name: &str) -> IsolateLabel {
+        self.labels
+            .get(name)
+            .cloned()
+            .unwrap_or_else(IsolateLabel::shared)
+    }
+
+    pub(crate) fn isolated(&self, name: &str) -> Self {
+        let mut labels = self.labels.clone();
+        labels.insert(name.to_owned(), IsolateLabel::fresh());
+        Self { labels }
+    }
+}
+
+/// Store key: a service name **within one isolation group**.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub(crate) struct ServiceKey {
+    pub name: String,
+    pub label: IsolateLabel,
+}
+
 pub(crate) struct Core {
     fiber_sn: AtomicU64,
     hook_sn: AtomicU64,
@@ -27,7 +87,7 @@ pub(crate) struct Core {
     pub(crate) registry: Mutex<Registry>,
     pub(crate) hooks: Mutex<HashMap<String, Vec<events::Hook>>>,
     pub(crate) middlewares: Mutex<HashMap<String, Vec<events::MiddlewareEntry>>>,
-    pub(crate) store: Mutex<HashMap<String, Arc<ServiceImpl>>>,
+    pub(crate) store: Mutex<HashMap<ServiceKey, Arc<ServiceImpl>>>,
     pub(crate) logger: LoggerHandle,
 }
 
@@ -47,6 +107,7 @@ impl Core {
         let _ = root.ctx.set(Context {
             core: core.clone(),
             fiber: Arc::downgrade(&root),
+            isolate: Arc::new(IsolateMap::default()),
         });
         core
     }
@@ -59,8 +120,12 @@ impl Core {
         self.hook_sn.fetch_add(1, Ordering::Relaxed)
     }
 
-    pub(crate) fn store_impl(&self, name: &str) -> Option<Arc<ServiceImpl>> {
-        self.store.lock().unwrap().get(name).cloned()
+    pub(crate) fn store_impl(&self, name: &str, label: &IsolateLabel) -> Option<Arc<ServiceImpl>> {
+        let key = ServiceKey {
+            name: name.to_owned(),
+            label: label.clone(),
+        };
+        self.store.lock().unwrap().get(&key).cloned()
     }
 
     pub(crate) fn root_weak(&self) -> Weak<Fiber> {
@@ -74,6 +139,7 @@ impl Core {
 pub struct Context {
     pub(crate) core: Arc<Core>,
     pub(crate) fiber: Weak<Fiber>,
+    pub(crate) isolate: Arc<IsolateMap>,
 }
 
 impl Context {
@@ -83,22 +149,52 @@ impl Context {
         Context {
             fiber: Arc::downgrade(&core.root),
             core,
+            isolate: Arc::new(IsolateMap::default()),
         }
     }
 
-    pub(crate) fn for_fiber(core: &Arc<Core>, fiber: &Arc<Fiber>) -> Context {
+    pub(crate) fn for_fiber(
+        core: &Arc<Core>,
+        fiber: &Arc<Fiber>,
+        isolate: Arc<IsolateMap>,
+    ) -> Context {
         Context {
             core: core.clone(),
             fiber: Arc::downgrade(fiber),
+            isolate,
         }
     }
 
-    /// The root context: outside every plugin.
+    /// The root context: outside every plugin, no isolations applied.
     pub fn root(&self) -> Context {
         Context {
             core: self.core.clone(),
             fiber: Arc::downgrade(&self.core.root),
+            isolate: Arc::new(IsolateMap::default()),
         }
+    }
+
+    /// Derive a context that isolates one service name: plugins installed
+    /// through the derived context see a **different** instance of that
+    /// service than the rest of the runtime (cordis `ctx.isolate`).
+    ///
+    /// The same plugin can therefore be installed several times, each
+    /// instance wired to its own instance of the isolated service.
+    pub fn isolate(&self, name: impl AsRef<str>) -> Context {
+        Context {
+            core: self.core.clone(),
+            fiber: self.fiber.clone(),
+            isolate: Arc::new(self.isolate.isolated(name.as_ref())),
+        }
+    }
+
+    pub(crate) fn isolate_label(&self, name: &str) -> IsolateLabel {
+        self.isolate.label(name)
+    }
+
+    /// Whether the fiber this context belongs to is still installed.
+    pub(crate) fn fiber_alive(&self) -> bool {
+        self.fiber.strong_count() > 0
     }
 
     /// Whether this context is the root context.
@@ -174,9 +270,18 @@ impl Context {
             registry.entry(key, name.clone(), &plugin)
         };
 
-        let fiber = Fiber::install(&self.core, Arc::downgrade(&parent), plugin, config, name);
+        let fiber = Fiber::install(
+            &self.core,
+            self.isolate.clone(),
+            Arc::downgrade(&parent),
+            plugin,
+            config,
+            name,
+        );
         let _ = fiber.runtime.set(runtime.clone());
-        let _ = fiber.ctx.set(Context::for_fiber(&self.core, &fiber));
+        let _ = fiber
+            .ctx
+            .set(Context::for_fiber(&self.core, &fiber, self.isolate.clone()));
         runtime.fibers.lock().unwrap().push(fiber.clone());
 
         // Register disposal with the parent fiber: when the parent
@@ -215,7 +320,7 @@ impl Context {
         value: Arc<dyn Any + Send + Sync>,
     ) -> Result<(), CordisError> {
         let fiber = self.active_fiber("provide a service")?;
-        crate::reflect::provide(&self.core, &fiber, name.into(), value)
+        crate::reflect::provide(&self.core, self, &fiber, name.into(), value)
     }
 
     /// Typed convenience over [`Context::provide_raw`].
@@ -245,7 +350,7 @@ impl Context {
         self.set_raw(name, value as Arc<dyn Any + Send + Sync>)
     }
 
-    /// Resolve a service by name, walking the fiber chain first.
+    /// Resolve a service by name within this context's isolation group.
     pub fn get_raw(&self, name: &str) -> Option<Arc<dyn Any + Send + Sync>> {
         crate::reflect::resolve_value(&self.core, self, name)
     }
