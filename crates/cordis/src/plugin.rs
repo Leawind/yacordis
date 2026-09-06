@@ -95,6 +95,18 @@ pub trait Plugin: Send + Sync + 'static {
         Inject::none()
     }
 
+    /// Services this plugin declares it will provide once active.
+    ///
+    /// Purely declarative — the body is what actually provides. The
+    /// runtime uses the declaration for dependency-cycle diagnostics:
+    /// pending fibers whose required injects and declared provides close
+    /// a loop can never activate, and are reported (log + introspection)
+    /// instead of pending forever. Declare honestly: a declaration the
+    /// body never fulfills can produce a false cycle report.
+    fn provides(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     /// The plugin body. Called with a context scoped to this fiber and
     /// the plugin config. Registrations made on the context during the
     /// call are tracked automatically and reverted on dispose.

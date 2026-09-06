@@ -74,6 +74,7 @@
 #![deny(missing_docs)]
 
 mod context;
+mod diagnose;
 mod effect;
 mod error;
 mod events;

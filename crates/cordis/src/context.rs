@@ -7,7 +7,7 @@
 //! itself.
 
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
@@ -89,6 +89,8 @@ pub(crate) struct Core {
     pub(crate) middlewares: Mutex<HashMap<String, Vec<events::MiddlewareEntry>>>,
     pub(crate) store: Mutex<HashMap<ServiceKey, Arc<ServiceImpl>>>,
     pub(crate) logger: LoggerHandle,
+    /// Cycle shapes already reported on the logger (dedup key).
+    pub(crate) reported_cycles: Mutex<HashSet<String>>,
 }
 
 impl Core {
@@ -103,6 +105,7 @@ impl Core {
             middlewares: Mutex::new(HashMap::new()),
             store: Mutex::new(HashMap::new()),
             logger: LoggerHandle::new(Arc::new(StderrLogger)),
+            reported_cycles: Mutex::new(HashSet::new()),
         });
         let _ = root.ctx.set(Context {
             core: core.clone(),
@@ -484,6 +487,16 @@ impl Context {
                     .unwrap_or(false),
             })
             .collect()
+    }
+
+    /// Introspection: groups of installed fibers that mutually wait for
+    /// each other's declared provides — none of them can ever activate
+    /// (the counterpart of cordis v4 issue #66, which pends silently).
+    /// Empty unless [`Plugin::provides`](crate::Plugin::provides)
+    /// declarations close a loop among pending fibers; the same groups
+    /// are logged (once per shape) as they form.
+    pub fn dependency_cycles(&self) -> Vec<Vec<String>> {
+        crate::diagnose::dependency_cycles(&self.core)
     }
 
     #[allow(dead_code)] // exercised by tests and future modules

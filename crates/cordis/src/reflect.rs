@@ -188,4 +188,8 @@ pub(crate) fn notify(core: &Arc<Core>, touched: &[(String, IsolateLabel)]) {
             .map(|boxed| (*boxed).clone());
         events::emit_service(core, name, value);
     }
+
+    // Service availability changed: pending fibers may now form (or
+    // break) a declared-provides dependency cycle.
+    crate::diagnose::report_cycles(core);
 }

@@ -148,6 +148,9 @@ pub(crate) struct Fiber {
     /// Declared dependencies, cached at install (the plugin trait is
     /// queried exactly once).
     inject: Inject,
+    /// Declared provides (`Plugin::provides`), cached at install; used
+    /// by dependency-cycle diagnostics.
+    provides: Vec<String>,
     /// The isolation group map this fiber was installed under.
     #[allow(dead_code)] // read via contexts; kept for scope introspection
     pub(crate) isolate: Arc<crate::context::IsolateMap>,
@@ -231,6 +234,7 @@ impl Fiber {
             inner: Mutex::new(fresh_inner(FiberState::Active, Value::Null)),
             schedule: Mutex::new(ScheduleState::default()),
             inject: Inject::none(),
+            provides: Vec::new(),
             isolate: Arc::new(crate::context::IsolateMap::default()),
         })
     }
@@ -244,6 +248,7 @@ impl Fiber {
         name: String,
     ) -> Arc<Fiber> {
         let inject = plugin.inject();
+        let provides = plugin.provides();
         Arc::new_cyclic(|weak| Fiber {
             id: core.next_fiber_id(),
             name,
@@ -255,6 +260,7 @@ impl Fiber {
             inner: Mutex::new(fresh_inner(FiberState::Pending, config)),
             schedule: Mutex::new(ScheduleState::default()),
             inject,
+            provides,
             isolate,
         })
     }
@@ -344,6 +350,12 @@ impl Fiber {
     /// Cached at install time; `Plugin::inject` is never re-queried.
     pub(crate) fn inject_names(&self) -> &[(String, bool)] {
         &self.inject.entries
+    }
+
+    /// Service names declared via `Plugin::provides`, in order. Cached
+    /// at install time; read by dependency-cycle diagnostics.
+    pub(crate) fn declared_provides(&self) -> &[String] {
+        &self.provides
     }
 
     /// Re-read the given services (within this fiber's isolation group)
@@ -448,6 +460,9 @@ impl Fiber {
         if !executing_op_on_this_thread() {
             core.quiesce();
         }
+        // A fresh install can complete a declared-provides cycle (nothing
+        // was provided or withdrawn, so no notify fires).
+        crate::diagnose::report_cycles(core);
     }
 
     fn reload(&self, core: &Arc<Core>) {
