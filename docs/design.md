@@ -153,7 +153,77 @@ Value 优先的动态载体、无锁重入（§2.2，FFI 回调内再 install/pr
 （typed downcast 仅 native 侧可用）；插件侧监听器不提供手动移除句柄
 （随 fiber 卸载自动清理）。
 
-## 5. 路线图
+## 5. 设计评审记录（2026-09-06，里程碑 3 后）
+
+对已实现部分的一次全面自查：每个决策复核理由，缺陷当场修复，债务显式记录。
+
+### 5.1 评审中发现并已修复的缺陷
+
+1. **fiber 调度丢唤醒（并发正确性）**：原实现 `busy: AtomicBool` 与
+   `pending: Mutex<Vec<Op>>` 分离，CAS 失败入队与持锁者排空之间存在
+   窗口——racer 在持锁者最后一次排空之后、busy 释放之前入队的 op 会
+   悬挂。修复：busy 与队列收进单个 `Mutex<ScheduleState>`，push 与
+   busy 检查共享一把锁，用户代码仍在锁外执行。
+2. **FFI 回调状态泄漏 + 双重释放隐患**：`SendCallback` 无 `Drop`，
+   成功注册路径的插件闭包状态（`State<F>` 盒）在 fiber 卸载时永不
+   释放；手写的 `Clone` 共享 `user_data`，一旦被使用即双重释放。
+   修复：实现 `Drop`（释放后置空、恰好一次）、删除 `Clone`；vtable
+   错误路径的显式释放一并移除（与 Drop 并存即双重释放）。
+3. **`Plugin::inject` 重复查询**：每次 `check_impls`/`refresh` 都重新
+   调用 trait 并分配。修复：install 时缓存进 `Fiber.inject`。
+
+### 5.2 复核后维持的决策（含理由）
+
+- **同步优先**：M1 阶段正确的复杂度取舍。代价已知且接受：`Plugin::
+  apply`/`Disposable` 的同步签名是单向门，引入异步时现存插件代码
+  必然破坏；`sleep` 阻塞调用线程，插件体内不得长阻塞（timer 文档已写明）。
+- **effect 认领模型**（嵌套作用域 + 卸载逆序展平）：与 v4 逐点对齐，
+  测试覆盖嵌套与手动中途释放。
+- **epoch = `Option<Vec<u64>>`**：与 v4 字符串签名等价且更廉价；
+  `u64::MAX` 兜底（依赖实现者已死）实践中不可达，仅防御性保留。
+- **Failed 即立即回滚**（偏离 v4 的残留语义）：保证时间性可组合承诺，
+  不回退。
+- **C ABI 而非 Rust 类型直通**：预编译插件与宿主 rustc/依赖解耦的
+  唯一可行解；`malloc/free` 共享分配器消除配对负担。限制：Windows
+  静态 CRT（/MT）构建的插件会破坏共享堆假设，文档需注明（待办）。
+- **卸载保留代码映射**：Rust 无法证明代码静默，泄漏机器码页换取
+  卸载安全，语义上状态层面仍完全可逆。
+- **waterfall 与普通 hook 分表**：静态签名无法复用 v4 的 `next` 参数
+  约定；已文档化。
+- **监听器 panic 吞掉转日志**（v4 会向 emit 传播）：宿主健壮性优先，
+  与 FFI 侧行为一致。
+
+### 5.3 已接受的设计债（按优先级）
+
+1. **服务名全局唯一，无 isolate**：同一插件装两个实例必然
+   `ServiceConflict`（现有「多实例」测试实际改了服务名绕开）。插件
+   平台愿景需要 isolate/作用域隔离，已在路线图，属功能缺口而非缺陷。
+2. **`visible`/`dep_store` 双映射**：v4 携带的两张表。可用「owner
+   active 或 owner 即请求者」的单条规则合并简化，但会轻微改变祖先
+   fiber 加载中可见性语义；待 isolate 设计时一并处理。
+3. **typed 事件每监听器重复反序列化**：`on_event` 对同一 payload 逐
+   监听器 `from_value`。量级小可接受；如成热点可缓存解析结果。
+4. **`FiberHandle::dispose()` 返回 `Result<bool>` 但已不会 Err**：
+   历史签名残留，下个破坏性版本改为 `bool`。
+5. **waterfall 中间件 panic 返回 `Null`**：与合法结果无法区分；未来
+   应改为错误通道。
+6. **FFI 句柄表只增不减**（fiber ctx 句柄按 fiber id 复用但纤维销毁
+   不回收）：有界泄漏，等 isolate/清理策略设计时统一处理。
+7. **插件侧监听器无手动移除句柄**：随 fiber 卸载自动清理已覆盖主
+   场景；手动移除留待有真实需求再加。
+8. **命名不一致**：`cordis::Disposable`（Box 别名）vs plugin-api 的
+   `Disposable`（结构体）；`ctx.on` 返回 `EffectHandle`（语义正确但
+   读者易困惑）。留待破坏性版本统一。
+9. **核心无内省 API**：宿主无法枚举已装插件/服务（registry 内部
+   才可见）。插件平台迟早需要，挂在 isolate 里程碑。
+
+### 5.4 测试缺口
+
+- 并发调度（丢唤醒修复）无专门测试——多线程 stress 测试待补。
+- 服务名冲突（双实例同名）只有 Failed 断言，无「文档化该限制」的
+  显式测试名。
+
+## 6. 路线图
 
 1. ~~M2：`cordis-plugin-api` + `cordis-loader`~~（✅ 见 §4）。
 2. 异步生命周期：async apply/dispose、fiber inertia 互斥、

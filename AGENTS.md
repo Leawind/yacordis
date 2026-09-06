@@ -25,3 +25,7 @@
 - edition 2024 中 `#[no_mangle]` 属于 unsafe attribute，宏里必须写 `#[unsafe(no_mangle)]`；由于宏的属性检查跟随**宏定义 crate** 的 edition，即便展开进 edition 2021 的插件 crate 也必须用 unsafe(...) 形式。
 - `cargo build --message-format=json` 时，rustc 的编译诊断以 `reason: "compiler-message"` JSON 行走 stdout（人类可读文本在 `message.rendered`），stderr 只剩 cargo 自身错误。加载器报告构建失败时必须合并两处输出，否则只见 "could not compile" 看不到原因。
 - `CARGO_NET_OFFLINE` 环境变量只接受字面量 `true`/`false`（CLI flag 才接受 `--offline`）；传 `1` 会让 cargo 直接报错。
+
+- 同一 fiber 的生命周期调度若用「原子 busy 标志 + 独立的 pending 锁」配对，多线程下存在丢唤醒窗口（racer 在持锁者最后排空与 busy 释放之间入队的 op 永不被处理）。结论：busy 与队列收进单个 Mutex，push 与 busy 检查共享锁，用户代码在锁外执行；并发正确性不靠原子序数推理，靠锁的临界区保证。
+
+- 跨 FFI 回调记录的宿主侧包装类型，`Drop` 必须是唯一释放路径；再写显式释放调用（哪怕是错误清理路径）就会双重释放。需要「提前放弃」语义时用 `mem::replace` 置空后再Drop，共享 `user_data` 的 `Clone` 直接禁止。
