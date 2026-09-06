@@ -51,9 +51,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "cordis-logger"
+version = "0.1.0"
+dependencies = [
+ "cordis",
+ "serde_json",
+]
+
+[[package]]
 name = "cordis-plugin-api"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
+]
+
+[[package]]
+name = "cordis-timer"
+version = "0.1.0"
+dependencies = [
+ "cordis",
  "serde_json",
 ]
 

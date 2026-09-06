@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/cordis", "crates/cordis-plugin-api", "crates/cordis-loader"]
+members = ["crates/cordis", "crates/cordis-plugin-api", "crates/cordis-loader", "crates/cordis-timer", "crates/cordis-logger"]
 
 [workspace.package]
 version = "0.1.0"
