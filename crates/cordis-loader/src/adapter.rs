@@ -26,19 +26,33 @@ pub(crate) struct SendCallback {
 unsafe impl Send for SendCallback {}
 unsafe impl Sync for SendCallback {}
 
-impl Clone for SendCallback {
-    fn clone(&self) -> Self {
-        Self {
-            callback: self.callback,
+impl SendCallback {
+    pub(crate) fn new(callback: Callback) -> Self {
+        Self { callback }
+    }
+}
+
+impl Drop for SendCallback {
+    fn drop(&mut self) {
+        if let Some(drop_fn) = self.callback.drop_fn {
+            // SAFETY: user_data is owned by this callback record; moving
+            // the Callback out via mem::forget keeps it alive so the
+            // contract "dropped exactly once" holds even if a copy of
+            // the raw value lingers elsewhere.
+            let callback = std::mem::replace(
+                &mut self.callback,
+                Callback {
+                    user_data: std::ptr::null_mut(),
+                    invoke: None,
+                    drop_fn: None,
+                },
+            );
+            unsafe { drop_fn(callback.user_data) };
         }
     }
 }
 
 impl SendCallback {
-    pub(crate) fn new(callback: Callback) -> Self {
-        Self { callback }
-    }
-
     /// Invoke the plugin trampoline. `ctx_handle` identifies the context
     /// the plugin sees inside the callback.
     pub(crate) fn invoke(&self, ctx_handle: u64, args: &Value) -> Invocation {
@@ -83,16 +97,6 @@ impl SendCallback {
             }
             cordis_plugin_api::CODE_PANIC => Invocation::Failed("plugin code panicked".into()),
             other => Invocation::Failed(format!("plugin callback returned code {other}")),
-        }
-    }
-
-    /// Run (and release) the callback's `drop_fn` — the plugin-side
-    /// closure state dies with this record.
-    pub(crate) fn drop_callback(callback: &Callback) {
-        if let Some(drop_fn) = callback.drop_fn {
-            // SAFETY: user_data is owned by this callback record and the
-            // host drops each record exactly once.
-            unsafe { drop_fn(callback.user_data) };
         }
     }
 }

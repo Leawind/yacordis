@@ -55,10 +55,6 @@ fn make_json(value: &Value) -> RawBuffer {
     cordis_plugin_api::buffer_from_vec(serde_json::to_vec(value).unwrap_or_default())
 }
 
-fn drop_callback(callback: &Callback) {
-    SendCallback::drop_callback(callback);
-}
-
 unsafe extern "C" fn v_free_buffer(buffer: RawBuffer) {
     cordis_plugin_api::free_buffer(buffer);
 }
@@ -73,7 +69,7 @@ unsafe extern "C" fn v_effect(ctx_handle: u64, label: RawBuffer, setup: Callback
     let label = take_string(label);
     let setup = SendCallback::new(setup);
     let Some(ctx) = handles().get_context(ctx_handle) else {
-        drop_callback(&setup.callback);
+        // Dropping `setup` releases the plugin-side state via Drop.
         return 0;
     };
     let result = ctx.effect(&label, move |_| {
@@ -102,7 +98,6 @@ fn on_impl(ctx_handle: u64, name: RawBuffer, listener: Callback, once: bool) -> 
     let name = take_string(name);
     let listener = SendCallback::new(listener);
     let Some(ctx) = handles().get_context(ctx_handle) else {
-        drop_callback(&listener.callback);
         return 0;
     };
     let registration_result = if once {
@@ -239,7 +234,6 @@ unsafe extern "C" fn v_plugin(
     cordis_plugin_api::free_buffer(manifest);
     let config = take_json(config);
     let Ok(doc) = serde_json::from_str::<Value>(&manifest_text) else {
-        drop_callback(&apply);
         return 0;
     };
     let name = doc["name"].as_str().map(str::to_owned);
