@@ -9,7 +9,6 @@
 
 use std::any::Any;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use serde_json::{Value, json};
@@ -19,7 +18,7 @@ use crate::effect::{EffectHandle, ScopeGuard, run_plugin_apply};
 use crate::error::{CordisError, PluginError};
 use crate::events;
 use crate::logger::LogLevel;
-use crate::plugin::Plugin;
+use crate::plugin::{Inject, Plugin};
 
 /// Lifecycle state of a fiber.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,10 +90,19 @@ pub(crate) struct Fiber {
     pub self_weak: OnceLock<Weak<Fiber>>,
     pub ctx: OnceLock<Context>,
     pub inner: Mutex<FiberInner>,
-    /// Guards against re-entrant ops on the same fiber; deferred ops are
-    /// replayed when the current one finishes.
-    busy: AtomicBool,
-    pending: Mutex<Vec<Op>>,
+    /// Serializes lifecycle ops on this fiber. `busy` + the deferred queue
+    /// live under one lock so a racer can never push an op after the
+    /// holder released the flag without it being drained (lost wakeup).
+    schedule: Mutex<ScheduleState>,
+    /// Declared dependencies, cached at install (the plugin trait is
+    /// queried exactly once).
+    inject: Inject,
+}
+
+#[derive(Default)]
+struct ScheduleState {
+    busy: bool,
+    queue: Vec<Op>,
 }
 
 pub(crate) enum Op {
@@ -132,8 +140,8 @@ impl Fiber {
             self_weak: OnceLock::from(weak.clone()),
             ctx: OnceLock::new(),
             inner: Mutex::new(fresh_inner(FiberState::Active, Value::Null)),
-            busy: AtomicBool::new(false),
-            pending: Mutex::new(Vec::new()),
+            schedule: Mutex::new(ScheduleState::default()),
+            inject: Inject::none(),
         })
     }
 
@@ -144,6 +152,7 @@ impl Fiber {
         config: Value,
         name: String,
     ) -> Arc<Fiber> {
+        let inject = plugin.inject();
         Arc::new_cyclic(|weak| Fiber {
             id: core.next_fiber_id(),
             name,
@@ -153,8 +162,8 @@ impl Fiber {
             self_weak: OnceLock::from(weak.clone()),
             ctx: OnceLock::new(),
             inner: Mutex::new(fresh_inner(FiberState::Pending, config)),
-            busy: AtomicBool::new(false),
-            pending: Mutex::new(Vec::new()),
+            schedule: Mutex::new(ScheduleState::default()),
+            inject,
         })
     }
 
@@ -248,17 +257,15 @@ impl Fiber {
     }
 
     /// All declared inject names (required and optional), in order.
-    pub(crate) fn inject_names(&self) -> Vec<(String, bool)> {
-        self.plugin
-            .as_ref()
-            .map(|p| p.inject().iter().map(|(n, r)| (n.to_owned(), r)).collect())
-            .unwrap_or_default()
+    /// Cached at install time; `Plugin::inject` is never re-queried.
+    pub(crate) fn inject_names(&self) -> &[(String, bool)] {
+        &self.inject.entries
     }
 
     /// Re-read the given services from the global store into `dep_store`.
     /// Returns true if any relevant entry changed.
     pub(crate) fn check_impls(&self, core: &Arc<Core>, names: &[String]) -> bool {
-        let inject: Vec<String> = self.inject_names().into_iter().map(|(n, _)| n).collect();
+        let inject: Vec<String> = self.inject_names().iter().map(|(n, _)| n.clone()).collect();
         let mut changed = false;
         let mut inner = self.inner.lock().unwrap();
         for name in names {
@@ -288,11 +295,7 @@ impl Fiber {
         if inner.disposed || inner.error.is_some() {
             return Vec::new();
         }
-        let required: Vec<String> = self
-            .plugin
-            .as_ref()
-            .map(|p| p.inject().required_names().map(str::to_owned).collect())
-            .unwrap_or_default();
+        let required: Vec<String> = self.inject.required_names().map(str::to_owned).collect();
         let new_epoch = if required.iter().all(|n| inner.dep_store.contains_key(n)) {
             Some(
                 required
@@ -329,7 +332,7 @@ impl Fiber {
     /// when possible. The fiber must already be registered in its runtime.
     pub(crate) fn run_install_effect(&self, core: &Arc<Core>) {
         events::emit_plugin(core, self);
-        let names: Vec<String> = self.inject_names().into_iter().map(|(n, _)| n).collect();
+        let names: Vec<String> = self.inject_names().iter().map(|(n, _)| n.clone()).collect();
         self.check_impls(core, &names);
         let ops = self.refresh();
         drive_ops(ops);
@@ -444,7 +447,7 @@ impl Fiber {
             inner.epoch = None;
         }
         self.unload(core, true);
-        let names: Vec<String> = self.inject_names().into_iter().map(|(n, _)| n).collect();
+        let names: Vec<String> = self.inject_names().iter().map(|(n, _)| n.clone()).collect();
         self.check_impls(core, &names);
         let ops = self.refresh();
         drive_ops(ops);
@@ -466,27 +469,26 @@ impl Fiber {
     // -----------------------------------------------------------------
 
     fn schedule(&self, op: Op) {
-        if self
-            .busy
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            self.pending.lock().unwrap().push(op);
+        // Push and busy-check share one lock: a racer either observes
+        // `busy == false` and drives the op itself, or queues under the
+        // same lock the holder drains from. No lost-wakeup window.
+        let mut state = self.schedule.lock().unwrap();
+        state.queue.push(op);
+        if state.busy {
             return;
         }
-        self.run_op(op);
-        while let Some(op) = self.pop_pending() {
-            self.run_op(op);
-        }
-        self.busy.store(false, Ordering::Release);
-    }
-
-    fn pop_pending(&self) -> Option<Op> {
-        let mut pending = self.pending.lock().unwrap();
-        if pending.is_empty() {
-            None
-        } else {
-            Some(pending.remove(0))
+        state.busy = true;
+        loop {
+            let queue = std::mem::take(&mut state.queue);
+            drop(state);
+            for queued in queue {
+                self.run_op(queued);
+            }
+            state = self.schedule.lock().unwrap();
+            if state.queue.is_empty() {
+                state.busy = false;
+                return;
+            }
         }
     }
 

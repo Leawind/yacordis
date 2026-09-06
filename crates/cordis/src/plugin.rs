@@ -22,7 +22,7 @@ use crate::error::PluginResult;
 pub struct Inject {
     /// (name, required) in declaration order; required order defines the
     /// epoch.
-    entries: Vec<(String, bool)>,
+    pub(crate) entries: Vec<(String, bool)>,
 }
 
 impl Inject {
