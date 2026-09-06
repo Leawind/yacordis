@@ -8,6 +8,7 @@
 
 ## 其他
 
+- 提交信息（commit message）一律用英文，Conventional Commits 风格（feat/fix/docs/test...）
 - AGENTS-LOCAL.md 中存放本地开发环境下所用工具链相关的经验，建议阅读
 
 ## 踩坑记录
