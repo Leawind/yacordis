@@ -157,12 +157,18 @@ impl FfiPlugin {
 
     pub(crate) fn context_handle(&self, ctx: &cordis::Context, handles: &HandleTable) -> u64 {
         let fiber_id = ctx.fiber().id().unwrap_or(0);
-        *self
-            .ctx_handles
-            .lock()
-            .unwrap()
-            .entry(fiber_id)
-            .or_insert_with(|| handles.insert(HostObject::Context(ctx.clone())))
+        let mut cached = self.ctx_handles.lock().unwrap();
+        if let Some(id) = cached.get(&fiber_id) {
+            // Still resolvable (its fiber alive)? Reuse; otherwise drop
+            // the stale entry and mint a fresh handle.
+            if handles.get_context(*id).is_some() {
+                return *id;
+            }
+            cached.remove(&fiber_id);
+        }
+        let id = handles.insert(HostObject::Context(ctx.clone()));
+        cached.insert(fiber_id, id);
+        id
     }
 }
 

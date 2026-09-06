@@ -193,35 +193,43 @@ Value 优先的动态载体、无锁重入（§2.2，FFI 回调内再 install/pr
 - **监听器 panic 吞掉转日志**（v4 会向 emit 传播）：宿主健壮性优先，
   与 FFI 侧行为一致。
 
-### 5.3 已接受的设计债（按优先级）
+### 5.3 设计债清偿（2026-09-06 第二轮）
 
-1. **服务名全局唯一，无 isolate**：同一插件装两个实例必然
-   `ServiceConflict`（现有「多实例」测试实际改了服务名绕开）。插件
-   平台愿景需要 isolate/作用域隔离，已在路线图，属功能缺口而非缺陷。
-2. **`visible`/`dep_store` 双映射**：v4 携带的两张表。可用「owner
-   active 或 owner 即请求者」的单条规则合并简化，但会轻微改变祖先
-   fiber 加载中可见性语义；待 isolate 设计时一并处理。
-3. **typed 事件每监听器重复反序列化**：`on_event` 对同一 payload 逐
-   监听器 `from_value`。量级小可接受；如成热点可缓存解析结果。
-4. **`FiberHandle::dispose()` 返回 `Result<bool>` 但已不会 Err**：
-   历史签名残留，下个破坏性版本改为 `bool`。
-5. **waterfall 中间件 panic 返回 `Null`**：与合法结果无法区分；未来
-   应改为错误通道。
-6. **FFI 句柄表只增不减**（fiber ctx 句柄按 fiber id 复用但纤维销毁
-   不回收）：有界泄漏，等 isolate/清理策略设计时统一处理。
-7. **插件侧监听器无手动移除句柄**：随 fiber 卸载自动清理已覆盖主
-   场景；手动移除留待有真实需求再加。
-8. **命名不一致**：`cordis::Disposable`（Box 别名）vs plugin-api 的
-   `Disposable`（结构体）；`ctx.on` 返回 `EffectHandle`（语义正确但
-   读者易困惑）。留待破坏性版本统一。
-9. **核心无内省 API**：宿主无法枚举已装插件/服务（registry 内部
-   才可见）。插件平台迟早需要，挂在 isolate 里程碑。
+评审列出的债务已按依赖顺序逐项处理：
 
-### 5.4 测试缺口
+| 债务 | 处置 |
+|---|---|
+| 服务名全局唯一，无 isolate | ✅ `ctx.isolate(name)` 落地：store 按 `(name, label)` 键控，notify 按组隔离，同名服务跨组共存 |
+| `visible`/`dep_store` 双映射 | ✅ 删除快照表；可见性坍缩为单一规则（provider active 或请求者即 provider），fiber 链回溯解析一并移除 |
+| `dispose()` 返回永不 Err 的 `Result` | ✅ 改为 `bool` |
+| waterfall panic 返回 `Null` | ✅ `waterfall`/`Middleware`/`Next` 全链 `Result` 化，panic 转错误 |
+| 命名撞车 `Disposable` | ✅ core 侧别名改名 `Disposer`；`on/once` 返回 `ListenerHandle` 别名 |
+| 核心无内省 API | ✅ `installed_plugins()` / `provided_services()` |
+| FFI 句柄表只增不减 | ✅ `get_context` 顺手 GC（fiber 已销毁的条目即取即删），FfiPlugin 缓存条目先验证后复用 |
+| 并发调度无 stress 测试 | ✅ 8 线程 × 40 轮 install/dispose 环 + 看门狗 |
 
-- 并发调度（丢唤醒修复）无专门测试——多线程 stress 测试待补。
-- 服务名冲突（双实例同名）只有 Failed 断言，无「文档化该限制」的
-  显式测试名。
+**stress 测试揪出的真 bug 与语义决策**（本轮最有价值的产出）：
+
+1. **stale op 重放**：级联中排队的 Reload/Unload op 与真实 epoch 可能
+   脱节，多线程交错下会把已停用的 fiber 拉回 Active。修复：op 携带
+   epoch 快照，执行时不匹配即丢弃（`run_op` stale-guard）。
+2. **同步边界**：`install`/`dispose`/`restart` 的级联在无竞争时同步
+   完成；有并发交错时级联可能「稍后」落地。为提供与 v4 `inertia`
+   对应的同步语义，新增 `Core::quiesce()`（等待全部 op 执行完毕）与
+   `FiberHandle::wait_for(state, timeout)`，并在 install/dispose/restart
+   内部调用——【重入场景（插件 body 内再 install/dispose）自动跳过】，
+   否则 quiesce 会等待自身正在执行的外层 op，形成自死锁。
+3. **重入 quiesce 自死锁**（上面第 2 条的防御本身曾是死锁源）：以
+   thread-local `EXECUTING_OPS` 检测「本线程正处于某个 op 内」来跳过。
+
+**仍然接受的债**（更新后余量）：
+
+1. 并发交错下 `install`/`dispose` 返回时，【其他线程】触发的级联可能
+   尚未落地——强断言需配 `wait_for`/`quiesce`。彻底消除需把生命周期
+   改造成单线程 actor 执行器，属异步里程碑的架构决策。
+2. typed 事件每监听器重复反序列化（不变，量级小）。
+3. 插件侧监听器无手动移除句柄（不变，随 fiber 卸载自动清理覆盖主场景）。
+4. `Fiber.parent`/`Fiber.isolate` 字段暂只写不读（为 scope 内省预留）。
 
 ## 6. 路线图
 

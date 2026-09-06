@@ -91,6 +91,18 @@ pub use fiber::FiberState;
 pub use logger::{DiscardLogger, LogLevel, Logger, StderrLogger};
 pub use plugin::{Inject, Plugin};
 
+/// Internal diagnostics (used by the stress tests).
+#[doc(hidden)]
+pub mod test_support {
+    pub fn pending_ops() -> i64 {
+        crate::fiber::pending_ops()
+    }
+
+    pub fn lifecycle_trace_fiber(id: u64) -> Vec<String> {
+        crate::fiber::lifecycle_trace::dump_fiber(id)
+    }
+}
+
 /// Ergonomic imports for typical hosts and plugins.
 pub mod prelude {
     pub use crate::context::{Context, FiberHandle};

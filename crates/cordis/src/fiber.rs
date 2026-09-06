@@ -9,6 +9,7 @@
 
 use std::any::Any;
 use std::collections::HashMap;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use serde_json::{Value, json};
@@ -46,6 +47,50 @@ impl FiberState {
     }
 }
 
+/// Per-fiber lifecycle tracing for post-mortem diagnostics (stress
+/// tests). Lock discipline: this module never locks `Fiber::inner` —
+/// callers may already hold it, and the mutex is not re-entrant.
+pub(crate) mod lifecycle_trace {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+
+    const CAP_PER_FIBER: usize = 64;
+    const MAX_FIBERS: usize = 4096;
+
+    type Ring = Mutex<(HashMap<u64, Vec<String>>, usize)>;
+
+    fn ring() -> &'static Ring {
+        static RING: OnceLock<Ring> = OnceLock::new();
+        RING.get_or_init(|| Mutex::new((HashMap::new(), 0)))
+    }
+
+    pub(crate) fn trace(event: &str, fiber: &super::Fiber) {
+        let tid = std::thread::current().id();
+        let line = format!("T{tid:?} {event}");
+        let mut guard = ring().lock().unwrap();
+        let (map, total) = &mut *guard;
+        if *total >= MAX_FIBERS * 2 {
+            return; // saturated; post-mortem covers the earliest fibers only
+        }
+        let entry = map.entry(fiber.id).or_default();
+        if entry.len() >= CAP_PER_FIBER {
+            entry.remove(0);
+        }
+        entry.push(line);
+        *total += 1;
+    }
+
+    pub(crate) fn dump_fiber(id: u64) -> Vec<String> {
+        ring()
+            .lock()
+            .unwrap()
+            .0
+            .get(&id)
+            .cloned()
+            .unwrap_or_default()
+    }
+}
+
 /// A service implementation registered by a fiber.
 pub(crate) struct ServiceImpl {
     pub name: String,
@@ -80,9 +125,16 @@ pub(crate) struct FiberInner {
     pub disposed: bool,
 }
 
+pub(crate) static PENDING_OPS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+pub(crate) fn pending_ops() -> i64 {
+    PENDING_OPS.load(Ordering::SeqCst)
+}
+
 pub(crate) struct Fiber {
     pub id: u64,
     pub name: String,
+    #[allow(dead_code)] // parent link used by future scope introspection
     pub parent: Option<Weak<Fiber>>,
     pub plugin: Option<Arc<dyn Plugin>>,
     pub runtime: OnceLock<Arc<crate::registry::Runtime>>,
@@ -97,6 +149,7 @@ pub(crate) struct Fiber {
     /// queried exactly once).
     inject: Inject,
     /// The isolation group map this fiber was installed under.
+    #[allow(dead_code)] // read via contexts; kept for scope introspection
     pub(crate) isolate: Arc<crate::context::IsolateMap>,
 }
 
@@ -106,9 +159,45 @@ struct ScheduleState {
     queue: Vec<Op>,
 }
 
+pub(crate) struct OpGuard;
+
+impl Drop for OpGuard {
+    fn drop(&mut self) {
+        EXECUTING_OPS.with(|c| c.set(c.get().saturating_sub(1)));
+        PENDING_OPS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+thread_local! {
+    static EXECUTING_OPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Whether this thread is currently inside a lifecycle op. A `quiesce`
+/// called from within an op (cascading dispose inside a disposer) would
+/// wait for itself — callers skip it in that case; the outer op's
+/// completion is what makes the cascade observable.
+pub(crate) fn executing_op_on_this_thread() -> bool {
+    EXECUTING_OPS.with(|c| c.get() > 0)
+}
+
+fn op_epoch(op: &Op) -> &Option<Vec<u64>> {
+    match op {
+        Op::Reload { epoch } => epoch,
+        Op::Unload { epoch, .. } => epoch,
+    }
+}
+
 pub(crate) enum Op {
-    Reload,
-    Unload { keep_alive: bool },
+    Reload {
+        /// The epoch this op was scheduled against; dropped as stale when
+        /// the fiber's epoch has moved on by the time the op runs.
+        epoch: Option<Vec<u64>>,
+    },
+    Unload {
+        keep_alive: bool,
+        /// See `Reload::epoch`.
+        epoch: Option<Vec<u64>>,
+    },
 }
 
 fn fresh_inner(state: FiberState, config: Value) -> FiberInner {
@@ -310,16 +399,34 @@ impl Fiber {
             None
         };
         let old_epoch = inner.epoch.clone();
-        if new_epoch == old_epoch {
+        let changed = new_epoch != old_epoch;
+        lifecycle_trace::trace(
+            &format!("refresh {old_epoch:?} -> {new_epoch:?} changed={changed}"),
+            self,
+        );
+        if !changed {
             return Vec::new();
         }
         inner.epoch = new_epoch.clone();
+        let epoch = new_epoch.clone();
         match (old_epoch, new_epoch) {
-            (None, Some(_)) => vec![(self.strong(), Op::Reload)],
-            (Some(_), None) => vec![(self.strong(), Op::Unload { keep_alive: true })],
+            (None, Some(_)) => vec![(self.strong(), Op::Reload { epoch })],
+            (Some(_), None) => vec![(
+                self.strong(),
+                Op::Unload {
+                    keep_alive: true,
+                    epoch: None,
+                },
+            )],
             (Some(_), Some(_)) => vec![
-                (self.strong(), Op::Unload { keep_alive: true }),
-                (self.strong(), Op::Reload),
+                (
+                    self.strong(),
+                    Op::Unload {
+                        keep_alive: true,
+                        epoch: None,
+                    },
+                ),
+                (self.strong(), Op::Reload { epoch }),
             ],
             (None, None) => Vec::new(),
         }
@@ -333,18 +440,34 @@ impl Fiber {
         self.check_impls(core, &names);
         let ops = self.refresh();
         drive_ops(ops);
+        // Synchronous install contract: `ctx.plugin()` must not return
+        // while this fiber's initial (or externally triggered) transition
+        // is still in flight on another thread. Skipped when this install
+        // runs inside another fiber's op (cascading install in a plugin
+        // body) — waiting there would wait for our own outer op.
+        if !executing_op_on_this_thread() {
+            core.quiesce();
+        }
     }
 
     fn reload(&self, core: &Arc<Core>) {
+        // Re-validate the dependency snapshot immediately before executing
+        // the body: a queued Reload op can be stale by the time it runs
+        // (a concurrent withdrawal may have emptied the store under us),
+        // and running then would activate a plugin whose required
+        // services are gone. Recomputing the epoch either confirms the
+        // reload or hands control to the follow-up transitions.
+        self.revalidate(core);
         let (plugin, config) = {
             let mut inner = self.inner.lock().unwrap();
-            if inner.disposed || inner.error.is_some() {
+            if inner.disposed || inner.error.is_some() || inner.epoch.is_none() {
                 return;
             }
             inner.provided.clear();
             (self.plugin.clone(), inner.config.clone())
         };
         let Some(plugin) = plugin else { return };
+        lifecycle_trace::trace("reload-enter", self);
         self.log(core, LogLevel::Debug, "reloading");
 
         let ctx = self.ctx().clone();
@@ -384,6 +507,22 @@ impl Fiber {
         }
     }
 
+    /// Whether no lifecycle op is queued or running on this fiber.
+    pub(crate) fn schedule_debug_idle(&self) -> bool {
+        let state = self.schedule.lock().unwrap();
+        !state.busy && state.queue.is_empty()
+    }
+
+    /// Re-read dependencies and recompute the epoch, driving any
+    /// follow-up transitions, so stale queued ops self-correct.
+    fn revalidate(&self, core: &Arc<Core>) {
+        let names: Vec<String> = self.inject_names().iter().map(|(n, _)| n.clone()).collect();
+        if self.check_impls(core, &names) {
+            let ops = self.refresh_ops();
+            drive_ops(ops);
+        }
+    }
+
     fn unload(&self, core: &Arc<Core>, keep_alive: bool) {
         let batches = {
             let mut inner = self.inner.lock().unwrap();
@@ -393,6 +532,7 @@ impl Fiber {
             inner.unloading = true;
             std::mem::take(&mut inner.batches)
         };
+        lifecycle_trace::trace("unload-enter", self);
         self.log(core, LogLevel::Debug, "unloading");
         for batch in batches {
             batch.dispose();
@@ -422,6 +562,7 @@ impl Fiber {
             inner.disposed = true;
             inner.error = None;
         }
+        lifecycle_trace::trace("dispose", self);
         events::emit_plugin(core, self);
         crate::registry::remove_fiber(core, self);
         self.unload(core, false);
@@ -462,6 +603,12 @@ impl Fiber {
     // -----------------------------------------------------------------
 
     fn schedule(&self, op: Op) {
+        crate::fiber::PENDING_OPS.fetch_add(1, Ordering::SeqCst);
+        let desc = match &op {
+            Op::Reload { .. } => "Reload",
+            Op::Unload { .. } => "Unload",
+        };
+        lifecycle_trace::trace(&format!("schedule({desc}) epoch={:?}", op_epoch(&op)), self);
         // Push and busy-check share one lock: a racer either observes
         // `busy == false` and drives the op itself, or queues under the
         // same lock the holder drains from. No lost-wakeup window.
@@ -486,10 +633,29 @@ impl Fiber {
     }
 
     fn run_op(&self, op: Op) {
+        EXECUTING_OPS.with(|c| c.set(c.get() + 1));
+        let _op_guard = crate::fiber::OpGuard;
+        // Stale-op guard: a queued op was scheduled against an epoch
+        // snapshot. If the fiber's epoch has moved on, the op's premise no
+        // longer holds — executing it could re-activate an unloaded fiber
+        // or unload a re-activated one. The current epoch's own transitions
+        // are (or will be) scheduled separately.
+        let stale = {
+            let inner = self.inner.lock().unwrap();
+            let current = &inner.epoch;
+            match &op {
+                Op::Reload { epoch } => epoch != current,
+                Op::Unload { epoch, .. } => epoch.is_some() && epoch != current,
+            }
+        };
+        if stale {
+            lifecycle_trace::trace("run_op(STALE, dropped)", self);
+            return;
+        }
         let core = self.ctx().core.clone();
         match op {
-            Op::Reload => self.reload(&core),
-            Op::Unload { keep_alive } => self.unload(&core, keep_alive),
+            Op::Reload { .. } => self.reload(&core),
+            Op::Unload { keep_alive, .. } => self.unload(&core, keep_alive),
         }
     }
 }

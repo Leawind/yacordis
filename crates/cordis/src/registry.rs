@@ -65,6 +65,33 @@ impl Registry {
         self.map.len()
     }
 
+    /// Introspection view for `Context::installed_plugins`.
+    pub(crate) fn summaries(&self) -> Vec<crate::context::PluginSummary> {
+        let mut out: Vec<_> = self
+            .map
+            .values()
+            .map(|runtime| crate::context::PluginSummary {
+                name: Some(runtime.name.clone()),
+                fibers: runtime
+                    .fibers
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .map(|fiber| {
+                        let inner = fiber.inner.lock().unwrap();
+                        crate::context::FiberSummary {
+                            id: fiber.id,
+                            name: fiber.name.clone(),
+                            state: inner.state,
+                        }
+                    })
+                    .collect(),
+            })
+            .collect();
+        out.sort_by_key(|summary| summary.name.clone().unwrap_or_default());
+        out
+    }
+
     fn remove(&mut self, key: PluginKey) {
         self.map.remove(&key);
     }

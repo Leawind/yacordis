@@ -192,8 +192,10 @@ impl Context {
         self.isolate.label(name)
     }
 
-    /// Whether the fiber this context belongs to is still installed.
-    pub(crate) fn fiber_alive(&self) -> bool {
+    /// Whether the fiber this context belongs to is still installed
+    /// (contexts outliving their fiber resolve nothing).
+    #[must_use]
+    pub fn fiber_alive(&self) -> bool {
         self.fiber.strong_count() > 0
     }
 
@@ -457,9 +459,48 @@ impl Context {
         self.core.logger.set(logger);
     }
 
+    /// Introspection: every plugin identity with installed fibers, and
+    /// the state of each fiber. Hosts and debug UIs use this to answer
+    /// "what is loaded right now?".
+    pub fn installed_plugins(&self) -> Vec<PluginSummary> {
+        let registry = self.core.registry.lock().unwrap();
+        registry.summaries()
+    }
+
+    /// Introspection: every currently-provided service, across all
+    /// isolation groups (labels are not part of the summary; compare by
+    /// owner instead).
+    pub fn provided_services(&self) -> Vec<ServiceSummary> {
+        let store = self.core.store.lock().unwrap();
+        store
+            .values()
+            .map(|impl_| ServiceSummary {
+                name: impl_.name.clone(),
+                owner: impl_.owner_name.clone(),
+                active: impl_
+                    .owner
+                    .upgrade()
+                    .map(|fiber| fiber.state() == FiberState::Active)
+                    .unwrap_or(false),
+            })
+            .collect()
+    }
+
     #[allow(dead_code)] // exercised by tests and future modules
     pub(crate) fn log_error(&self, target: &str, error: &(dyn std::error::Error + 'static)) {
         self.core.logger.log_error(target, error);
+    }
+
+    /// Block until every lifecycle operation in the runtime has finished
+    /// (the synchronous counterpart of cordis v4's async `inertia`).
+    ///
+    /// Install/dispose drive their own cascades synchronously on the
+    /// calling thread when uncontended; under concurrent lifecycle
+    /// activity, some cascaded transitions may complete shortly after the
+    /// triggering call returns. Hosts that need a globally stable view
+    /// (assertions, snapshots, shutdown) call this first.
+    pub fn quiesce(&self) {
+        self.core.quiesce();
     }
 
     /// Dispose every installed plugin fiber (root effects survive; this is
@@ -481,8 +522,77 @@ impl Default for Context {
     }
 }
 
+impl Core {
+    /// Wait until every scheduled lifecycle op in the runtime has
+    /// finished executing.
+    pub(crate) fn quiesce(&self) {
+        let mut spins = 0u32;
+        while crate::fiber::pending_ops() > 0 {
+            std::thread::sleep(std::time::Duration::from_micros(50));
+            spins += 1;
+            if spins == 40 {
+                eprintln!(
+                    "[cordis quiesce] stuck: pending_ops={} fibers={}",
+                    crate::fiber::pending_ops(),
+                    {
+                        let registry = self.registry.lock().unwrap();
+                        registry
+                            .all_fibers()
+                            .iter()
+                            .map(|f| {
+                                format!(
+                                    "{}[{}]state={:?} idle={}",
+                                    f.name,
+                                    f.id,
+                                    f.inner.lock().unwrap().state,
+                                    f.schedule_debug_idle()
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    }
+                );
+            }
+            if spins > 20_000_000 {
+                return;
+            }
+        }
+    }
+}
+
 /// Handle that removes a listener (an alias: listeners *are* effects).
 pub type ListenerHandle = EffectHandle;
+
+/// Summary of one installed plugin fiber.
+#[derive(Clone, Debug)]
+pub struct FiberSummary {
+    /// The fiber id.
+    pub id: u64,
+    /// The plugin name (or `anonymous`).
+    pub name: String,
+    /// Current lifecycle state.
+    pub state: FiberState,
+}
+
+/// Summary of one plugin identity and its installed fibers.
+#[derive(Clone, Debug)]
+pub struct PluginSummary {
+    /// Plugin name, when declared.
+    pub name: Option<String>,
+    /// Every fiber installed from this plugin.
+    pub fibers: Vec<FiberSummary>,
+}
+
+/// Summary of one provided service.
+#[derive(Clone, Debug)]
+pub struct ServiceSummary {
+    /// Service name.
+    pub name: String,
+    /// Name of the owning plugin fiber.
+    pub owner: String,
+    /// Whether the owner fiber is currently active.
+    pub active: bool,
+}
 
 /// Handle onto an installed plugin fiber: inspect state, hot-update its
 /// config, restart, or dispose (dynamic uninstall).
@@ -524,6 +634,21 @@ impl FiberHandle {
     /// Whether the fiber is currently active.
     pub fn is_active(&self) -> bool {
         self.state() == FiberState::Active
+    }
+
+    /// Block until the fiber reaches `state`, or `None` on timeout.
+    /// The eventually-consistent counterpart of `state()` for use under
+    /// concurrent lifecycle activity (sync counterpart of awaiting v4's
+    /// fiber `inertia`).
+    pub fn wait_for(&self, state: FiberState, timeout: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        while std::time::Instant::now() < deadline {
+            if self.state() == state {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_micros(100));
+        }
+        self.state() == state
     }
 
     /// The failure message when the fiber is in `Failed` state.
@@ -573,14 +698,30 @@ impl FiberHandle {
     /// Stop and start the fiber with the current config.
     pub fn restart(&self) -> Result<(), CordisError> {
         let fiber = self.require("restart a fiber")?;
-        fiber.restart(&fiber.ctx().core)
+        let result = fiber.restart(&fiber.ctx().core);
+        if !crate::fiber::executing_op_on_this_thread() {
+            fiber.ctx().core.quiesce();
+        }
+        result
     }
 
     /// Dispose the fiber: every effect is reverted in reverse order and
     /// dependent fibers deactivate. Returns false if already disposed.
+    ///
+    /// The synchronous contract: when this returns (with `true`), this
+    /// fiber and every fiber the cascade touched have no lifecycle work
+    /// in flight — dependents are already deactivated.
     pub fn dispose(&self) -> bool {
         match self.upgrade() {
-            Some(fiber) => fiber.dispose(&fiber.ctx().core),
+            Some(fiber) => {
+                let disposed = fiber.dispose(&fiber.ctx().core);
+                // Skipped when called from inside a cascading disposer:
+                // waiting for the outer op there would self-deadlock.
+                if !crate::fiber::executing_op_on_this_thread() {
+                    fiber.ctx().core.quiesce();
+                }
+                disposed
+            }
             // Fully torn down and deregistered: idempotent success.
             None => false,
         }

@@ -38,9 +38,20 @@ impl HandleTable {
         id
     }
 
+    /// Look up a context handle. Entries whose fiber has been torn down
+    /// are garbage-collected on sight, so the table cannot grow without
+    /// bound across install/dispose cycles.
     pub(crate) fn get_context(&self, id: u64) -> Option<Context> {
-        match self.map.lock().unwrap().get(&id)? {
-            HostObject::Context(ctx) => Some(ctx.clone()),
+        let mut map = self.map.lock().unwrap();
+        match map.get(&id) {
+            Some(HostObject::Context(ctx)) => {
+                if ctx.fiber_alive() {
+                    Some(ctx.clone())
+                } else {
+                    map.remove(&id);
+                    None
+                }
+            }
             _ => None,
         }
     }
