@@ -45,7 +45,7 @@ impl Plugin for AppPlugin {
         ctx.effect("app/heartbeat", move |_| {
             println!("      [app] heartbeat started (pool={pool})");
             Ok(Some(
-                Box::new(|| println!("      [app] heartbeat stopped")) as Disposable
+                Box::new(|| println!("      [app] heartbeat stopped")) as Disposer
             ))
         })?;
         ctx.on("request", move |ctx, req| {
@@ -85,7 +85,7 @@ fn main() -> Result<(), CordisError> {
     println!("   app still {:?}; new uri visible", app.state());
 
     println!("5. uninstall database: app deactivates, effects revert");
-    db.dispose()?;
+    db.dispose();
     println!("   app.state = {:?}", app.state());
 
     println!("6. reinstall: app comes back without touching the host");

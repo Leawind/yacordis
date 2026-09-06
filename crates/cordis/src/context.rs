@@ -265,7 +265,7 @@ impl Context {
     // -----------------------------------------------------------------
 
     /// Register a listener; returns a handle that removes it when called.
-    pub fn on<F>(&self, name: impl Into<String>, listener: F) -> Result<EffectHandle, CordisError>
+    pub fn on<F>(&self, name: impl Into<String>, listener: F) -> Result<ListenerHandle, CordisError>
     where
         F: Fn(&Context, &Value) -> Option<Value> + Send + Sync + 'static,
     {
@@ -278,7 +278,7 @@ impl Context {
         &self,
         name: impl Into<String>,
         listener: F,
-    ) -> Result<EffectHandle, CordisError>
+    ) -> Result<ListenerHandle, CordisError>
     where
         F: Fn(&Context, &Value) -> Option<Value> + Send + Sync + 'static,
     {
@@ -310,20 +310,24 @@ impl Context {
     /// Register a middleware participating in [`Context::waterfall`].
     pub fn middleware<F>(&self, name: impl Into<String>, mw: F) -> Result<EffectHandle, CordisError>
     where
-        F: Fn(&Context, Value, events::Next<'_>) -> Value + Send + Sync + 'static,
+        F: Fn(&Context, Value, events::Next<'_>) -> Result<Value, CordisError>
+            + Send
+            + Sync
+            + 'static,
     {
         let fiber = self.active_fiber("register a middleware")?;
         events::middleware(&self.core, &fiber, name.into(), Arc::new(mw))
     }
 
     /// Run the middleware chain registered under `name`, ending at
-    /// `fallback` when every middleware delegated.
+    /// `fallback` when every middleware delegated. A panicking middleware
+    /// aborts the chain and surfaces as an error (never as a value).
     pub fn waterfall(
         &self,
         name: &str,
         init: Value,
         fallback: impl FnOnce(Value) -> Value,
-    ) -> Value {
+    ) -> Result<Value, CordisError> {
         events::waterfall(&self.core, self, name, init, Box::new(fallback))
     }
 
@@ -371,6 +375,9 @@ impl Default for Context {
         Self::new()
     }
 }
+
+/// Handle that removes a listener (an alias: listeners *are* effects).
+pub type ListenerHandle = EffectHandle;
 
 /// Handle onto an installed plugin fiber: inspect state, hot-update its
 /// config, restart, or dispose (dynamic uninstall).
@@ -449,7 +456,7 @@ impl FiberHandle {
             events::INTERNAL_UPDATE,
             config.into(),
             Box::new(std::convert::identity),
-        );
+        )?;
         {
             let mut inner = fiber.inner.lock().unwrap();
             inner.config = config;
@@ -466,11 +473,11 @@ impl FiberHandle {
 
     /// Dispose the fiber: every effect is reverted in reverse order and
     /// dependent fibers deactivate. Returns false if already disposed.
-    pub fn dispose(&self) -> Result<bool, CordisError> {
+    pub fn dispose(&self) -> bool {
         match self.upgrade() {
-            Some(fiber) => Ok(fiber.dispose(&fiber.ctx().core)),
+            Some(fiber) => fiber.dispose(&fiber.ctx().core),
             // Fully torn down and deregistered: idempotent success.
-            None => Ok(false),
+            None => false,
         }
     }
 }

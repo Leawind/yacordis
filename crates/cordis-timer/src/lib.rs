@@ -5,7 +5,7 @@
 //! fiber**: unloading the fiber cancels them automatically.
 //!
 //! ```no_run
-//! use cordis::{Context, Disposable, Plugin, PluginError, PluginResult};
+//! use cordis::{Context, Disposer, Plugin, PluginError, PluginResult};
 //! use cordis_timer::{TimerContextExt, TimerPlugin};
 //! use serde_json::json;
 //!
@@ -38,7 +38,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use cordis::{Context, Disposable, Plugin, PluginError, PluginResult};
+use cordis::{Context, Disposer, Plugin, PluginError, PluginResult};
 use serde_json::Value;
 
 /// The name under which [`TimerPlugin`] provides [`TimerWheel`].
@@ -310,7 +310,7 @@ impl TimerContextExt for Context {
         let effect_task = task.clone();
         let effect_wheel = wheel.clone();
         self.effect("timer/timeout", move |_| {
-            let disposer: Disposable = Box::new(move || {
+            let disposer: Disposer = Box::new(move || {
                 effect_task.cancel();
                 effect_wheel.signal.notify_all();
             });
@@ -338,7 +338,7 @@ impl TimerContextExt for Context {
         let effect_task = task.clone();
         let effect_wheel = wheel.clone();
         self.effect("timer/interval", move |_| {
-            let disposer: Disposable = Box::new(move || {
+            let disposer: Disposer = Box::new(move || {
                 effect_task.cancel();
                 effect_wheel.signal.notify_all();
             });
@@ -365,7 +365,7 @@ impl TimerContextExt for Context {
         // thread with [`SleepOutcome::Cancelled`].
         self.effect("timer/sleep", move |_| {
             let task = task.clone();
-            let disposer: Disposable = Box::new(move || task.cancel());
+            let disposer: Disposer = Box::new(move || task.cancel());
             Ok(Some(disposer))
         })
         .map_err(|e| e.to_string())?;
@@ -391,7 +391,7 @@ impl Plugin for TimerPlugin {
             .map_err(PluginError::new)?;
         // Shut the wheel thread down when this fiber unloads.
         ctx.effect("timer/wheel", move |_| {
-            let disposer: Disposable = Box::new(move || wheel.shutdown());
+            let disposer: Disposer = Box::new(move || wheel.shutdown());
             Ok(Some(disposer))
         })
         .map_err(PluginError::new)?;

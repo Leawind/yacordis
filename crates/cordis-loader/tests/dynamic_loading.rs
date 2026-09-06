@@ -94,7 +94,7 @@ fn full_binary_plugin_lifecycle() {
 
     // 7. Dispose: plugin disposers run (file proof), service withdrawn,
     //    the native consumer deactivates.
-    handle.dispose().expect("dispose");
+    handle.dispose();
     assert_eq!(
         consumer.state(),
         FiberState::Pending,
@@ -122,7 +122,7 @@ fn full_binary_plugin_lifecycle() {
         .expect("reinstall");
     assert!(handle2.is_active());
     assert!(ctx.has("greeter"));
-    handle2.dispose().expect("dispose again");
+    handle2.dispose();
     assert!(!ctx.has("greeter"));
 }
 
@@ -144,5 +144,5 @@ fn pending_until_host_provides_the_dependency() {
         .expect("provide");
     assert_eq!(handle.state(), FiberState::Active);
     assert!(ctx.has("greeter"));
-    handle.dispose().expect("dispose");
+    handle.dispose();
 }

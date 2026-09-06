@@ -508,7 +508,7 @@ pub(crate) fn drive_ops(ops: Vec<(Arc<Fiber>, Op)>) {
     }
 }
 
-pub(crate) fn disposal_disposer(fiber: &Arc<Fiber>) -> crate::effect::Disposable {
+pub(crate) fn disposal_disposer(fiber: &Arc<Fiber>) -> crate::effect::Disposer {
     let core = fiber.ctx().core.clone();
     let fiber = Arc::downgrade(fiber);
     Box::new(move || {

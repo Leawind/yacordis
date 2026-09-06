@@ -20,12 +20,12 @@ fn push(log: &Log, msg: &str) {
 }
 
 /// A disposer that records its execution (Box coercion needs the target type).
-fn dispose_log(log: &Log, msg: &str) -> Disposable {
+fn dispose_log(log: &Log, msg: &str) -> Disposer {
     Box::new(log_fn(log, msg))
 }
 
 #[allow(dead_code)]
-fn _keep_log_fn(f: impl FnOnce() + Send + 'static) -> Disposable {
+fn _keep_log_fn(f: impl FnOnce() + Send + 'static) -> Disposer {
     Box::new(f)
 }
 
@@ -70,7 +70,7 @@ fn dynamic_install_uninstall_reverts_in_reverse_order() {
     assert!(handle.is_active());
     assert_eq!(logged(&log), ["a:setup", "b:setup"]);
 
-    assert!(handle.dispose().expect("dispose"));
+    assert!(handle.dispose());
     assert_eq!(
         logged(&log),
         ["a:setup", "b:setup", "b:dispose", "a:dispose"]
@@ -78,7 +78,7 @@ fn dynamic_install_uninstall_reverts_in_reverse_order() {
     assert_eq!(handle.state(), FiberState::Disposed);
 
     // Disposing twice is a no-op.
-    assert!(!handle.dispose().expect("dispose twice"));
+    assert!(!handle.dispose());
     assert_eq!(logged(&log).len(), 4);
 }
 
@@ -190,7 +190,7 @@ fn dependents_follow_their_provider_through_install_cycles() {
     assert_eq!(logged(&log), ["provider:live", "consumer:live(pg://x)"]);
 
     // Provider leaves: the consumer deactivates, its effects revert.
-    provider_fiber.dispose().expect("dispose provider");
+    provider_fiber.dispose();
     assert_eq!(consumer_fiber.state(), FiberState::Pending);
     assert_eq!(
         logged(&log),
@@ -212,7 +212,7 @@ fn dependents_follow_their_provider_through_install_cycles() {
     assert!(consumer_fiber.is_active());
     assert!(logged(&log).contains(&"consumer:live(pg://y)".to_owned()));
 
-    again.dispose().expect("dispose again");
+    again.dispose();
     assert_eq!(consumer_fiber.state(), FiberState::Pending);
 }
 
@@ -245,7 +245,7 @@ fn optional_dependencies_do_not_block() {
         )
         .expect("install assets");
     assert!(ctx.has("assets"));
-    provider.dispose().expect("dispose");
+    provider.dispose();
     assert!(!ctx.has("assets"));
     assert!(handle.is_active(), "optional loss must not deactivate");
 }
@@ -364,7 +364,9 @@ fn event_modes_emit_once_bail_waterfall_and_removal() {
         next(json!({ "wrapped": value }))
     })
     .expect("mw2");
-    let out = ctx.waterfall("pipeline", json!({"core": 1}), |v| json!({"final": v}));
+    let out = ctx
+        .waterfall("pipeline", json!({"core": 1}), |v| json!({"final": v}))
+        .expect("waterfall");
     assert_eq!(
         out,
         json!({"final": {"wrapped": {"core": 1, "extra": true}}})
@@ -386,7 +388,7 @@ fn registering_on_a_disposed_fiber_fails() {
             json!(null),
         )
         .expect("install");
-    fiber.dispose().expect("dispose");
+    fiber.dispose();
 
     let stale_ctx = slot.lock().unwrap().clone().expect("context captured");
     assert!(matches!(
@@ -516,7 +518,7 @@ fn multiple_instances_are_independent() {
     let _ = ctx.plugin(worker2, json!({"id": 2})).expect("b");
 
     assert!(a.is_active());
-    a.dispose().expect("dispose a");
+    a.dispose();
     assert_eq!(a.state(), FiberState::Disposed);
     assert!(ctx.has("worker2"), "other instance survives");
 }
@@ -597,7 +599,7 @@ fn reentrant_registration_from_listeners_and_bodies() {
                     move |ctx: &Context, _cfg: &Value| -> PluginResult {
                         let gone = gone.clone();
                         ctx.effect("child-effect", move |_| {
-                            let d: Disposable = Box::new(move || {
+                            let d: Disposer = Box::new(move || {
                                 *gone.lock().unwrap() = true;
                             });
                             Ok(Some(d))
@@ -612,7 +614,7 @@ fn reentrant_registration_from_listeners_and_bodies() {
         )
         .expect("parent");
 
-    parent.dispose().expect("dispose parent");
+    parent.dispose();
     assert!(
         *child_gone.lock().unwrap(),
         "child effect reverted with parent"
@@ -667,7 +669,7 @@ fn internal_events_report_lifecycle() {
             json!(null),
         )
         .expect("install svc");
-    svc.dispose().expect("dispose svc");
+    svc.dispose();
 
     // internal/status carries the fiber summary plus the OLD state
     // (cordis v4 parity): pending -> active at activation, and

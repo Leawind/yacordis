@@ -104,11 +104,11 @@ impl SendCallback {
 /// What a plugin trampoline answered with.
 pub(crate) enum Invocation {
     Ok(Option<Value>),
-    Disposers(Vec<cordis::Disposable>),
+    Disposers(Vec<cordis::Disposer>),
     Failed(String),
 }
 
-fn copy_callbacks(raw: RawCallbacks) -> Vec<cordis::Disposable> {
+fn copy_callbacks(raw: RawCallbacks) -> Vec<cordis::Disposer> {
     if raw.ptr.is_null() || raw.len == 0 {
         return Vec::new();
     }
@@ -122,7 +122,7 @@ fn copy_callbacks(raw: RawCallbacks) -> Vec<cordis::Disposable> {
             };
             Box::new(move || {
                 let _ = this.invoke(0, &Value::Null);
-            }) as cordis::Disposable
+            }) as cordis::Disposer
         })
         .collect()
 }

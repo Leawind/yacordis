@@ -26,7 +26,7 @@
 //!
 //!     // Fully dynamic lifecycle, same as native plugins:
 //!     handle.update(serde_json::json!({ "greeting": "hola" }))?;
-//!     handle.dispose()?;
+//!     handle.dispose();
 //!     Ok(())
 //! }
 //! ```

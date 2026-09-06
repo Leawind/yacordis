@@ -61,7 +61,7 @@
 //!
 //! // Disposing the provider deactivates the dependent; reinstalling
 //! // reactivates it. Both without touching the process.
-//! db.dispose()?;
+//! db.dispose();
 //! assert_eq!(app.state(), FiberState::Pending);
 //! # Ok(())
 //! # }
@@ -84,7 +84,7 @@ mod reflect;
 mod registry;
 
 pub use context::{Context, FiberHandle};
-pub use effect::{Disposable, EffectHandle, EffectOutcome};
+pub use effect::{Disposer, EffectHandle, EffectOutcome};
 pub use error::{CordisError, PluginError, PluginResult};
 pub use events::Event;
 pub use fiber::FiberState;
@@ -94,7 +94,7 @@ pub use plugin::{Inject, Plugin};
 /// Ergonomic imports for typical hosts and plugins.
 pub mod prelude {
     pub use crate::context::{Context, FiberHandle};
-    pub use crate::effect::{Disposable, EffectHandle, EffectOutcome};
+    pub use crate::effect::{Disposer, EffectHandle, EffectOutcome};
     pub use crate::error::{CordisError, PluginError, PluginResult};
     pub use crate::events::Event;
     pub use crate::fiber::FiberState;

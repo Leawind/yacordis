@@ -43,7 +43,7 @@ pub(crate) fn provide(
     fiber.note_provided(&name, impl_.clone());
 
     let handle = EffectHandle::new(format!("ctx.provide({name})"));
-    let disposer: crate::effect::Disposable = {
+    let disposer: crate::effect::Disposer = {
         let core = core.clone();
         let fiber = Arc::downgrade(fiber);
         let impl_ = impl_.clone();

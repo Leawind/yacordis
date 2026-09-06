@@ -27,7 +27,7 @@ use crate::plugin::Plugin;
 ///
 /// Disposers must not panic; panics are caught at the disposal site,
 /// logged, and the remaining disposers still run.
-pub type Disposable = Box<dyn FnOnce() + Send>;
+pub type Disposer = Box<dyn FnOnce() + Send>;
 
 /// What an effect setup hands back to the runtime in addition to the
 /// disposers it recorded through the context.
@@ -37,19 +37,19 @@ pub enum EffectOutcome {
     #[default]
     None,
     /// A single disposer.
-    One(Disposable),
+    One(Disposer),
     /// Several disposers, disposed in reverse order.
-    Many(Vec<Disposable>),
+    Many(Vec<Disposer>),
 }
 
-impl From<Disposable> for EffectOutcome {
-    fn from(d: Disposable) -> Self {
+impl From<Disposer> for EffectOutcome {
+    fn from(d: Disposer) -> Self {
         EffectOutcome::One(d)
     }
 }
 
-impl From<Option<Disposable>> for EffectOutcome {
-    fn from(d: Option<Disposable>) -> Self {
+impl From<Option<Disposer>> for EffectOutcome {
+    fn from(d: Option<Disposer>) -> Self {
         match d {
             Some(d) => EffectOutcome::One(d),
             None => EffectOutcome::None,
@@ -57,8 +57,8 @@ impl From<Option<Disposable>> for EffectOutcome {
     }
 }
 
-impl From<Vec<Disposable>> for EffectOutcome {
-    fn from(mut v: Vec<Disposable>) -> Self {
+impl From<Vec<Disposer>> for EffectOutcome {
+    fn from(mut v: Vec<Disposer>) -> Self {
         match v.len() {
             0 => EffectOutcome::None,
             1 => EffectOutcome::One(v.pop().expect("len == 1")),
@@ -74,7 +74,7 @@ impl From<()> for EffectOutcome {
 }
 
 impl EffectOutcome {
-    pub(crate) fn into_disposers(self) -> Vec<Disposable> {
+    pub(crate) fn into_disposers(self) -> Vec<Disposer> {
         match self {
             EffectOutcome::None => Vec::new(),
             EffectOutcome::One(d) => vec![d],
@@ -85,7 +85,7 @@ impl EffectOutcome {
 
 /// Run disposers in reverse order, catching panics so that one failing
 /// disposer cannot skip the remaining cleanup.
-pub(crate) fn run_disposers(disposers: Vec<Disposable>) {
+pub(crate) fn run_disposers(disposers: Vec<Disposer>) {
     for disposer in disposers.into_iter().rev() {
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(disposer));
     }
@@ -105,7 +105,7 @@ pub(crate) fn panic_message(payload: &Box<dyn Any + Send>) -> String {
 /// handle does nothing: the effect has already been reverted.
 #[derive(Clone)]
 pub struct EffectHandle {
-    batch: Arc<Mutex<Vec<Disposable>>>,
+    batch: Arc<Mutex<Vec<Disposer>>>,
     alive: Arc<AtomicBool>,
     label: Arc<str>,
 }
@@ -138,15 +138,15 @@ impl EffectHandle {
         run_disposers(disposers);
     }
 
-    pub(crate) fn push(&self, disposer: Disposable) {
+    pub(crate) fn push(&self, disposer: Disposer) {
         self.batch.lock().unwrap().push(disposer);
     }
 
-    pub(crate) fn push_all(&self, disposers: Vec<Disposable>) {
+    pub(crate) fn push_all(&self, disposers: Vec<Disposer>) {
         self.batch.lock().unwrap().extend(disposers);
     }
 
-    pub(crate) fn take(&self) -> Vec<Disposable> {
+    pub(crate) fn take(&self) -> Vec<Disposer> {
         self.batch.lock().unwrap().drain(..).collect()
     }
 }
@@ -166,14 +166,14 @@ impl std::fmt::Debug for EffectHandle {
 /// it on the same thread.
 struct EffectScope {
     fiber_id: u64,
-    batch: Arc<Mutex<Vec<Disposable>>>,
+    batch: Arc<Mutex<Vec<Disposer>>>,
 }
 
 thread_local! {
     static SCOPES: RefCell<Vec<EffectScope>> = const { RefCell::new(Vec::new()) };
 }
 
-fn innermost_scope_of(fiber_id: u64) -> Option<Arc<Mutex<Vec<Disposable>>>> {
+fn innermost_scope_of(fiber_id: u64) -> Option<Arc<Mutex<Vec<Disposer>>>> {
     SCOPES.with(|s| {
         s.borrow()
             .iter()

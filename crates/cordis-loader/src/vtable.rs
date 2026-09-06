@@ -132,10 +132,10 @@ unsafe extern "C" fn v_dispose_handle(handle: u64) -> i32 {
             effect.dispose();
             0
         }
-        Some(crate::handles::LifecycleHandle::Fiber(fiber)) => match fiber.dispose() {
-            Ok(_) => 0,
-            Err(_) => -1,
-        },
+        Some(crate::handles::LifecycleHandle::Fiber(fiber)) => {
+            // false = already disposed, still a success for the caller.
+            u8::from(!fiber.dispose()) as i32
+        }
         None => -2,
     }
 }
@@ -268,10 +268,10 @@ unsafe extern "C" fn v_plugin(
 
 unsafe extern "C" fn v_fiber_dispose(handle: u64) -> i32 {
     match handles().take_lifecycle(handle) {
-        Some(crate::handles::LifecycleHandle::Fiber(fiber)) => match fiber.dispose() {
-            Ok(_) => 0,
-            Err(_) => -1,
-        },
+        Some(crate::handles::LifecycleHandle::Fiber(fiber)) => {
+            // false = already disposed, still a success for the caller.
+            u8::from(!fiber.dispose()) as i32
+        }
         Some(crate::handles::LifecycleHandle::Effect(effect)) => {
             effect.dispose();
             0

@@ -36,7 +36,7 @@ fn records_flow_to_sinks_with_plugin_scopes() {
     assert_eq!(records[0].message, "hello from emitter");
     assert_eq!(records[1].level, LogLevel::Debug);
     assert_eq!(records[1].message, "verbose detail");
-    emitter.dispose().expect("dispose");
+    emitter.dispose();
 }
 
 #[test]
@@ -83,7 +83,7 @@ fn sink_removal_and_service_withdrawal() {
     assert_eq!(memory.records().len(), 1, "sink removed");
 
     // Withdrawing the logger plugin removes the service.
-    logger_fiber.dispose().expect("dispose logger");
+    logger_fiber.dispose();
     assert!(ctx.logger().is_none());
     // Logging without the service is a no-op, not a panic.
     ctx.log_info("no service, no crash");

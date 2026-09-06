@@ -23,8 +23,12 @@ use crate::error::CordisError;
 use crate::fiber::Fiber;
 
 pub type Listener = Arc<dyn Fn(&Context, &Value) -> Option<Value> + Send + Sync>;
-pub type Next<'a> = Box<dyn FnOnce(Value) -> Value + 'a>;
-pub type Middleware = Arc<dyn for<'a> Fn(&Context, Value, Next<'a>) -> Value + Send + Sync>;
+/// The chain continuation handed to a [`Middleware`].
+pub type Next<'a> = Box<dyn FnOnce(Value) -> Result<Value, CordisError> + 'a>;
+/// A middleware participates in [`Context::waterfall`]: transform the
+/// value and delegate via `next(value)?`, or short-circuit with a value.
+pub type Middleware =
+    Arc<dyn for<'a> Fn(&Context, Value, Next<'a>) -> Result<Value, CordisError> + Send + Sync>;
 
 pub(crate) struct Hook {
     pub id: u64,
@@ -124,7 +128,7 @@ pub(crate) fn waterfall(
     name: &str,
     init: Value,
     fallback: Box<dyn FnOnce(Value) -> Value + '_>,
-) -> Value {
+) -> Result<Value, CordisError> {
     let middlewares: Vec<Middleware> = core
         .middlewares
         .lock()
@@ -142,9 +146,9 @@ fn run_chain<'a>(
     middlewares: &'a [Middleware],
     value: Value,
     fallback: Box<dyn FnOnce(Value) -> Value + 'a>,
-) -> Value {
+) -> Result<Value, CordisError> {
     let Some((first, rest)) = middlewares.split_first() else {
-        return fallback(value);
+        return Ok(fallback(value));
     };
     let next: Next<'a> = Box::new(move |value| run_chain(core, ctx, name, rest, value, fallback));
     // Keep a copy of the value: a panicking middleware consumes its
@@ -156,15 +160,15 @@ fn run_chain<'a>(
     match call_result {
         Ok(value) => value,
         Err(payload) => {
+            let message = crate::effect::panic_message(&payload);
             core.logger.log(
                 crate::logger::LogLevel::Error,
                 "cordis/waterfall",
-                &format!(
-                    "middleware panicked: {}; chain aborted (event: {name})",
-                    crate::effect::panic_message(&payload)
-                ),
+                &format!("middleware panicked: {message}; chain aborted (event: {name})"),
             );
-            Value::Null
+            Err(CordisError::PluginError(crate::error::PluginError(
+                format!("middleware panicked: {message}").into(),
+            )))
         }
     }
 }

@@ -48,7 +48,7 @@ fn timeout_fires_once() {
         .expect("install worker");
 
     assert_eq!(rx.recv_timeout(Duration::from_secs(2)), Ok("fired"));
-    worker.dispose().expect("dispose");
+    worker.dispose();
 }
 
 #[test]
@@ -70,7 +70,7 @@ fn unloading_the_fiber_cancels_pending_timeouts() {
         )
         .expect("install worker");
 
-    worker.dispose().expect("dispose before firing");
+    worker.dispose();
     // Give the wheel ample time to (wrongly) fire if cancellation broke.
     assert!(!wait_until(Duration::from_millis(900), || rx
         .try_recv()
@@ -99,7 +99,7 @@ fn manual_cancel_works() {
         )
         .expect("install worker");
 
-    worker.dispose().expect("dispose");
+    worker.dispose();
     assert!(!wait_until(Duration::from_millis(700), || rx
         .try_recv()
         .is_ok()));
@@ -149,7 +149,7 @@ fn interval_fires_repeatedly_until_cancelled() {
     assert!(!wait_until(Duration::from_millis(300), || rx
         .try_recv()
         .is_ok()));
-    worker.dispose().expect("dispose");
+    worker.dispose();
 }
 
 #[test]
@@ -182,7 +182,7 @@ fn sleep_elapses_and_unload_wakes_it_early() {
     // Let the worker enter its sleep, then unload the fiber.
     std::thread::sleep(Duration::from_millis(80));
     let start = Instant::now();
-    sleeper.dispose().expect("dispose sleeper");
+    sleeper.dispose();
     let outcome = rx
         .recv_timeout(Duration::from_secs(5))
         .expect("sleep woke up");
@@ -195,14 +195,14 @@ fn sleep_elapses_and_unload_wakes_it_early() {
         start.elapsed() < Duration::from_secs(4),
         "wakeup must be prompt"
     );
-    timer_fiber.dispose().expect("dispose timer");
+    timer_fiber.dispose();
 }
 
 #[test]
 fn disposing_the_timer_plugin_shuts_the_wheel_down() {
     let (ctx, timer_fiber) = install_timer();
     assert!(ctx.has(cordis_timer::TIMER_SERVICE));
-    timer_fiber.dispose().expect("dispose timer");
+    timer_fiber.dispose();
     assert!(!ctx.has(cordis_timer::TIMER_SERVICE));
     // New timers fail cleanly instead of silently doing nothing.
     assert!(ctx.set_timeout(Duration::from_millis(1), || {}).is_err());
