@@ -74,7 +74,7 @@ v4 的六态中 `LOADING`/`UNLOADING` 在同步世界里是即时完成的中间
 | `emit` | `emit` | 注册序全部调用，忽略返回值 |
 | `bail` / `serial` | `bail` | 注册序，首个非 `None` 返回值短路（异步聚合待异步里程碑） |
 | `parallel` | —（暂缺） | 需要 async 聚合，见路线图 |
-| `waterfall` | `middleware` + `waterfall` | v4 用同一 hook 表加 `next` 参数约定；Rust 静态签名不同，故注册表分开。panic 的中间件视为弃权，链在其余中间件上继续 |
+| `waterfall` | `middleware` + `waterfall` | v4 用同一 hook 表加 `next` 参数约定；Rust 静态签名不同，故注册表分开。panic 的中间件使链**中止**并返回错误（值通道永不混入 panic 副产物）；`emit`/`bail` 的监听器 panic 则吞掉转日志（§5.2） |
 
 - 监听器统一签名 `Fn(&Context, &Value) -> Option<Value>`，字符串名
   注册；`Event` trait（`NAME` + `Args`/`Ret`）提供 serde 类型化封装。
@@ -84,8 +84,9 @@ v4 的六态中 `LOADING`/`UNLOADING` 在同步世界里是即时完成的中间
   （服务出现/撤回；值仅当服务本身是 `serde_json::Value` 时透出）、
   `internal/dispatch`（非 internal 事件的观测钩子）、
   `internal/update`（配置更新 waterfall）。
-- v4 的 thisArg 过滤（`Context.filter`）依赖 isolate；M1 无 isolate，
-  故无分发过滤，`global` 选项一并延后。
+- isolate 已落地（§5.3：服务 store 按 `(name, label)` 键控，notify 按
+  组隔离，事件级联不跨组）；v4 的 thisArg 过滤（`Context.filter`）与
+  `global` 选项仍延后——事件分发本身尚无按组过滤。
 
 ### 2.5 服务双通道
 
@@ -100,8 +101,9 @@ v4 的六态中 `LOADING`/`UNLOADING` 在同步世界里是即时完成的中间
    异步聚合暂缺（`serial` 语义并入 `bail`）。
 2. **无 Proxy 系特性**：traceable/shadow、mixin/accessor、callable
    service、`ctx.xxx` 动态属性均不移植；一律显式 `ctx.get("name")`。
-3. **无 isolate / intercept**：服务全局可见（按名字）；配置拦截合并、
-   `check` 谓词、`Config.merge` 等留待后续里程碑。
+3. **无 isolate / intercept**（M1 时点的决策）：服务全局可见（按名字）。
+   其中 isolate 已于 M3 落地（§5.3）；intercept、配置拦截合并、
+   `check` 谓词、`Config.merge` 等仍留待后续里程碑。
 4. **插件身份** = `Arc` 数据指针（v4 按解析出的函数身份）。同一插件
    值的多次安装共享 runtime 条目；重新包装 `Arc` 视为新插件。
 5. **Failed 即回滚**（见 2.3）。
@@ -125,6 +127,8 @@ rustc/同依赖版本），边界为 C ABI（`cordis-plugin-api`，`ABI_VERSION 
 - **缓冲区所有权（唯一规则）**：被调方释放输入缓冲区；调用方读取后
   释放输出缓冲区。所有缓冲区走进程共享的 `malloc`/`free`（同进程
   只有一个 libc 实例），任意一侧皆可释放，无需配对各侧分配器。
+  **CRT 注意**：插件必须动态链接 CRT——Windows 静态 CRT（/MT）构建的
+  插件自带独立堆，跨界 `free` 违反共享分配器假设（UB）。
 - **插件导出**：`cordis_abi_version()`（握手，不符拒绝加载）、
   `cordis_plugin_manifest()`（名称 + required/optional 依赖）、
   `cordis_plugin_apply()`（apply 回调）、`cordis_plugin_free_buffer()`；
@@ -185,7 +189,7 @@ Value 优先的动态载体、无锁重入（§2.2，FFI 回调内再 install/pr
   不回退。
 - **C ABI 而非 Rust 类型直通**：预编译插件与宿主 rustc/依赖解耦的
   唯一可行解；`malloc/free` 共享分配器消除配对负担。限制：Windows
-  静态 CRT（/MT）构建的插件会破坏共享堆假设，文档需注明（待办）。
+  静态 CRT（/MT）构建的插件会破坏共享堆假设，已注明于 §4。
 - **卸载保留代码映射**：Rust 无法证明代码静默，泄漏机器码页换取
   卸载安全，语义上状态层面仍完全可逆。
 - **waterfall 与普通 hook 分表**：静态签名无法复用 v4 的 `next` 参数
@@ -239,6 +243,34 @@ Value 优先的动态载体、无锁重入（§2.2，FFI 回调内再 install/pr
 3. ~~`cordis-timer` / `cordis-logger`~~（✅ M3：同步线程定时轮 + 分级
    日志服务；`sleep` 以 effect 挂靠 fiber，卸载即唤醒，详见各自 crate
    文档）.
-4. 配置校验（Standard Schema 等价物）、isolate/intercept。
+4. 配置校验（Standard Schema 等价物）、intercept（isolate 已落地，
+   见 §5.3；依赖环诊断已落地，见 §7）。
 5. 插件仓库索引（版本解析、依赖声明、签名校验，叠加在 `fetch` 之上）。
 6. `cordis-macros`（`#[plugin]`/`#[inject]` 派生宏、Service 模式宏）。
+
+## 7. TS 上游对照与跟进（2026-09-06）
+
+cordis TS（v4）处于 rc 阶段（v4.0.0-rc.9），核心范式一年无破坏性变更，
+但其边界语义仍被 DeepSeek Harness 的实战持续打磨。本仓库的跟进策略：
+**不追功能，盯 cordiverse/cordis 的 issue 列表**——那里的问题就是这个
+范式在真实负载下暴露的裂缝预告片。逐项对照：
+
+| 上游 issue | 主题 | cordis-rust 状态 |
+|---|---|---|
+| #34 | epoch ABA：async 加载期间 update 改配置，epoch 感知不到 | **结构性免疫**：同步核没有异步加载窗口；并发排队 op 另有 epoch 快照 + stale-guard（§5.3），测试锁定于 `tests/stale_ops.rs` |
+| #96 / #91 | 卸载中注册 effect/listener → 泄漏 | **已覆盖**：`unloading` 态注册一律 `InactiveContext`、effect 即时回滚，测试锁定于 `tests/unloading.rs` |
+| #110 | provider 先于 consumer 卸载（`Promise.all` 竞态） | **结构性免疫**：同步级联，consumer 在 provider 的 provide-disposer 内完成停用；一层与深链（A←B←C）均有顺序断言（`tests/lifecycle.rs`、`tests/cascade.rs`） |
+| #66 | 循环插件依赖无检测 | **已落地**：`Plugin::provides` 声明 + SCC 检测 + 日志/内省报告（`src/diagnose.rs`）；body-only provide 不可检测，与上游同为开放边界 |
+| #43 | waterfall 结构化取消语义 | **部分对齐**：全链 `Result` 化、panic 转 Err（§2.4）；完整的取消语义上游也未定论 |
+| #90 / #102 | intercept 重设计、Standard Schema 诊断化 | **路线图**（§6.4），等上游语义收敛后再动 |
+
+两个可以写进定位的差异点（同步模型的红利，均非有意为之的性能取舍，
+而是模型选择带来的结构性消除）：其一，v4 的 #34/#110 类竞态根植于
+「异步生命周期 + 事件循环」，同步核里这一整类窗口不存在；其二，
+二进制插件分发（cdylib + C ABI）在 TS 里由 `require()` 免费提供，
+在我们这里是约 1,400 行的一等能力（§4）——两边的成本结构互为镜像。
+
+code size 对比（2026-09-06 时点，仅产品代码）：核心 TS 1,592 行 vs
+Rust 2,059 行（+29%，多出的是 TS 靠事件循环与 Proxy 免费获得的部分：
+调度队列、stale-op 防护、quiesce、显式服务解析）；reflect 层反而更短
+（-40%）；FFI 三件套（plugin-api + loader）约 1,400 行为纯增量。
