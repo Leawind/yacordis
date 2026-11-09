@@ -91,6 +91,8 @@ pub(crate) struct Core {
     pub(crate) logger: LoggerHandle,
     /// Cycle shapes already reported on the logger (dedup key).
     pub(crate) reported_cycles: Mutex<HashSet<String>>,
+    /// Framework work substrate: id counter + lazy executor.
+    pub(crate) work: crate::work::WorkRegistry,
 }
 
 impl Core {
@@ -106,6 +108,7 @@ impl Core {
             store: Mutex::new(HashMap::new()),
             logger: LoggerHandle::new(Arc::new(StderrLogger)),
             reported_cycles: Mutex::new(HashSet::new()),
+            work: crate::work::WorkRegistry::default(),
         });
         let _ = root.ctx.set(Context {
             core: core.clone(),

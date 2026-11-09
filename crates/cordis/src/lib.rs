@@ -83,6 +83,7 @@ mod logger;
 mod plugin;
 mod reflect;
 mod registry;
+mod work;
 
 pub use context::{Context, FiberHandle};
 pub use effect::{Disposer, EffectHandle, EffectOutcome};
@@ -91,6 +92,7 @@ pub use events::Event;
 pub use fiber::FiberState;
 pub use logger::{DiscardLogger, LogLevel, Logger, StderrLogger};
 pub use plugin::{Inject, Plugin};
+pub use work::{CancellationToken, WorkHandle, WorkOutcome};
 
 /// Internal diagnostics (used by the stress tests).
 #[doc(hidden)]
@@ -113,4 +115,5 @@ pub mod prelude {
     pub use crate::fiber::FiberState;
     pub use crate::logger::{DiscardLogger, LogLevel, Logger, StderrLogger};
     pub use crate::plugin::{Inject, Plugin};
+    pub use crate::work::{CancellationToken, WorkHandle, WorkOutcome};
 }

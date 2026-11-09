@@ -130,6 +130,9 @@ pub(crate) struct FiberInner {
     /// Services provided during the current body run, notified on
     /// activation.
     pub provided: Vec<(String, crate::context::IsolateLabel)>,
+    /// In-flight framework work units (`run_blocking`/`spawn_future`);
+    /// cancelled and joined before effects are rolled back.
+    pub works: Vec<Arc<crate::work::WorkUnit>>,
     pub unloading: bool,
     pub disposed: bool,
 }
@@ -227,6 +230,7 @@ fn fresh_inner(
         dep_store: HashMap::new(),
         batches: Vec::new(),
         provided: Vec::new(),
+        works: Vec::new(),
         unloading: false,
         disposed: false,
     }
@@ -530,6 +534,10 @@ impl Fiber {
                 // Roll back everything the failed body already recorded.
                 // (v4 keeps partial effects until the next unload; we revert
                 // eagerly so a Failed fiber has no live side effects.)
+                // Work units the body started are drained first, so their
+                // completion callbacks observe a live fiber and rollback
+                // runs without concurrent plugin code.
+                crate::work::drain_fiber_works(self);
                 batch.dispose();
                 self.log(core, LogLevel::Error, &format!("plugin failed: {err}"));
                 {
@@ -569,6 +577,9 @@ impl Fiber {
             inner.unloading = true;
             std::mem::take(&mut inner.batches)
         };
+        // Drain-before-rollback (§4.1 I1): no plugin code may run
+        // concurrently with the disposers below.
+        crate::work::drain_fiber_works(self);
         lifecycle_trace::trace("unload-enter", self);
         self.log(core, LogLevel::Debug, "unloading");
         for batch in batches {

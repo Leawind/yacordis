@@ -95,10 +95,38 @@ v4 的六态中 `LOADING`/`UNLOADING` 在同步世界里是即时完成的中间
   这是里程碑 2 跨 C ABI 边界的传输形态。
 - `set` 只允许提供者 fiber 自身调用（v4 的 multiple-fibers 检查）。
 
+### 2.6 框架中介并发（async as plumbing）
+
+异步里程碑的落地形态（§4.1 I1 的实现）：**生命周期保持同步串行**（
+结构性免疫的来源，见 §7），并发作为框架管道提供，不引入插件侧第二
+调度域，也不做 async apply/dispose（同步安装契约下 async body 仍会
+阻塞调用线程，只增加复杂度；与 v4 的分歧记录于 §3）。
+
+- **`ctx.run_blocking(label, work, on_done)`**：`work` 在专用框架线程
+  上运行，拿不到 `Context`（飞行中改框架状态会与回滚竞态），只有协作
+  式取消 token；完成后框架在工作线程上发起 `on_done(&Context, outcome)`
+  ——这是框架发起的调用，可用全套 context API（与 FFI 回调同一重入
+  契约）。fiber 已亡则投递丢弃。
+- **`ctx.spawn_future(label, fut, on_done)`**：future 在框架的
+  per-`Core` 执行器线程上轮询（惰性启动，存活至进程退出——keep-mapped
+  同款诚实）。中止在下一个 await 点生效；不 yield 的 poll 无法被中断。
+- **排空先于回滚**：每个工作单元双重登记（fiber 的 effect = 作用域
+  生命周期；fiber 的 works 列表 = 排空清单）。`unload` 与失败体回滚
+  先 cancel + join 全部在途单元，再逆序 disposal——回滚期间不存在
+  并发插件代码（`drain_fiber_works`）。join 对「正在执行本单元完成
+  回调的线程」自跳（thread-local 守卫），回调里 dispose 自身 fiber
+  不会自死锁。
+- **执行器中断语义**：任务停泊在 in-flight 注册表中（非仅队列），
+  否则 Pending 之后的任务会从执行器视野消失、中止请求永远无人观察
+  （本节实现曾因此死锁，测试锁定于 `tests/work.rs`）。
+- `parallel`/`serial` 分发模式需要 async 监听器聚合，待需求出现。
+
 ## 3. 与 TS 版的有意分歧（截至 M1）
 
 1. **纯同步**：disposer/apply 不返回 Future；`parallel`/`serial` 的
-   异步聚合暂缺（`serial` 语义并入 `bail`）。
+   异步聚合暂缺（`serial` 语义并入 `bail`）。并发需求由框架管道承担
+   （§2.6），生命周期签名保持同步是模型选择而非缺口；v4 的 fiber
+   inertia 对应本实现的 `quiesce`/排空语义。
 2. **无 Proxy 系特性**：traceable/shadow、mixin/accessor、callable
    service、`ctx.xxx` 动态属性均不移植；一律显式 `ctx.get("name")`。
 3. **无 isolate / intercept**（M1 时点的决策）：服务全局可见（按名字）。
@@ -169,6 +197,7 @@ Value 优先的动态载体、无锁重入（§2.2，FFI 回调内再 install/pr
   （落幕 → 排空 → 回滚三阶段），回滚期间不存在并发插件代码。线程与
   async 可以存在，但只能作为宿主管道（框架并发 API，或登记为 effect、
   排空阶段关闭的内部 runtime），不得建立框架看不见的第二调度域。
+  已落地为 §2.6 的 `run_blocking`/`spawn_future` + `drain_fiber_works`。
 - **I2（资源所有权）**：插件获取的一切资源，要么经 `ctx` 注册（框架
   持有，记入 handle 表），要么永不逃出插件体作用域。推论：dispose 时
   handle 表为空 ⇒ 语义干净。宿主半边机械可查（dispose 审计：表空
@@ -265,10 +294,10 @@ Value 优先的动态载体、无锁重入（§2.2，FFI 回调内再 install/pr
 ## 6. 路线图
 
 1. ~~M2：`cordis-plugin-api` + `cordis-loader`~~（✅ 见 §4）。
-2. 异步生命周期：async apply/dispose、fiber inertia 互斥、
-   `parallel`/`serial` 分发模式。设计以 §4.1 的「排空先于回滚」为纲；
-   上游语义输入：#268（async-generator effect 随 epoch 关闭）、
-   #136（parallel 模式上报）、fiber inertia 排空。
+2. ~~异步生命周期~~ → 重定义为**框架中介并发**并已落地（§2.6：
+   `run_blocking` / `spawn_future` + 排空先于回滚）。async apply/dispose
+   为有意不做（§3）；`parallel`/`serial` 分发待 async 监听器需求；
+   FFI 侧暴露这两个 API 待做。
 3. ~~`cordis-timer` / `cordis-logger`~~（✅ M3：同步线程定时轮 + 分级
    日志服务；`sleep` 以 effect 挂靠 fiber，卸载即唤醒，详见各自 crate
    文档）。
