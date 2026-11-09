@@ -399,6 +399,16 @@ cordis TS（v4）自上次快照（2026-09-06，rc.9）推进至 rc.12，76 个�
   回归测试锁定。
 - **#56（补回归测试）**：`internal/update` hooks 随 fiber 释放——我们经
   effect 收集天然覆盖，测试补齐。
+- **#296（采纳对齐）**：`DisposableList.unshift()` 让 fiber-local
+  `internal/update` 监听器的 `{ prepend: true }` 生效。我们的
+  waterfall 中间件注册表本只有 append 语义，现补 prepend
+  （`Context::middleware_prepend`）：prepend 项整体先于 append 项、
+  彼此按注册逆序，移除单个 prepend 项不动链条其余部分——语义与上游
+  测试逐点对齐，回归测试锁定于 `tests/update_hooks.rs`。同 PR 的另
+  两项：`clear()` 返回顺序属上游内部重构（两侧 dispose 顺序契约一致）；
+  「disposed fiber 不被后续通知复活」已由 `refresh`/`reload` 的
+  `disposed` 守卫覆盖（§5.3 stale-guard 体系）。#297（side-effect
+  标记）为 TS 打包事务，Rust 侧无对应物。
 - **#277（早已对齐）**：notify 按 `(name, isolate label)` 定向——
   `reflect.rs::notify` 一直如此，无需改动。
 - **#111 HMR 三阶段排空（范式背书）**：上游 HMR 采用「落幕 → 排空 →

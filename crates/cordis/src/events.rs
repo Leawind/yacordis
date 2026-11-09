@@ -277,19 +277,27 @@ pub(crate) fn once(
     Ok(register_hook(core, fiber, name, id, wrapped, false))
 }
 
+/// Register a middleware on the waterfall chain for `name`. With
+/// `prepend` the entry is inserted at the head (upstream
+/// `DisposableList.unshift`, PR #296): prepended entries run before
+/// appended ones, most recently prepended first; appended entries keep
+/// registration order.
 pub(crate) fn middleware(
     core: &Arc<Core>,
     fiber: &Arc<Fiber>,
     name: String,
     mw: Middleware,
+    prepend: bool,
 ) -> Result<EffectHandle, CordisError> {
     let id = core.next_hook_id();
     {
         let mut middlewares = core.middlewares.lock().unwrap();
-        middlewares
-            .entry(name.clone())
-            .or_default()
-            .push(MiddlewareEntry { id, mw });
+        let list = middlewares.entry(name.clone()).or_default();
+        if prepend {
+            list.insert(0, MiddlewareEntry { id, mw });
+        } else {
+            list.push(MiddlewareEntry { id, mw });
+        }
     }
     let core2 = core.clone();
     let name2 = name.clone();

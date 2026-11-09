@@ -512,7 +512,25 @@ impl Context {
             + 'static,
     {
         let fiber = self.active_fiber("register a middleware")?;
-        events::middleware(&self.core, &fiber, name.into(), Arc::new(mw))
+        events::middleware(&self.core, &fiber, name.into(), Arc::new(mw), false)
+    }
+
+    /// Register a middleware that runs before previously registered
+    /// ones on the same chain (upstream `{ prepend: true }`): among
+    /// prepended entries the most recently registered runs first.
+    pub fn middleware_prepend<F>(
+        &self,
+        name: impl Into<String>,
+        mw: F,
+    ) -> Result<EffectHandle, CordisError>
+    where
+        F: Fn(&Context, Value, events::Next<'_>) -> Result<Value, CordisError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        let fiber = self.active_fiber("register a middleware")?;
+        events::middleware(&self.core, &fiber, name.into(), Arc::new(mw), true)
     }
 
     /// Run the middleware chain registered under `name`, ending at
