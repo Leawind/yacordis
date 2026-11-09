@@ -50,7 +50,9 @@ mod loader;
 mod registry;
 mod vtable;
 
-pub use loader::{BuildOptions, LoadError, Loader, PluginLibrary, PluginManifest};
+pub use loader::{
+    BuildOptions, LoadError, Loader, PluginLibrary, PluginManifest, lint_source,
+};
 pub use registry::{
     Constraint, Entry, RegistryError, RegistryIndex, Repository, Sha256Verifier, Verifier,
     sha256_hex, sha256 as sha256_digest, Version,
@@ -58,3 +60,10 @@ pub use registry::{
 
 /// Re-export of the ABI crate so hosts and plugins can agree on types.
 pub use cordis_plugin_api as abi;
+
+/// Dispose-time audit hook (§4.1 I2, host half): collect every context
+/// handle bound to `fiber_id`. Exposed for tests and host tooling.
+#[doc(hidden)]
+pub fn audit_fiber_handles(fiber_id: u64) -> usize {
+    handles::HandleTable::global().audit_fiber(fiber_id)
+}

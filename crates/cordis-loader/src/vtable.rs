@@ -277,7 +277,17 @@ unsafe extern "C" fn v_fiber_dispose(handle: u64) -> i32 {
     match handles().take_lifecycle(handle) {
         Some(crate::handles::LifecycleHandle::Fiber(fiber)) => {
             // false = already disposed, still a success for the caller.
-            u8::from(!fiber.dispose()) as i32
+            let disposed_now = !fiber.dispose();
+            // §4.1 I2 host half: dispose-time audit collects context
+            // handles bound to the dead fiber.
+            let collected = handles().audit_fiber(fiber.id().unwrap_or(u64::MAX));
+            if collected > 0 {
+                plugin_log(
+                    log_level::DEBUG,
+                    &format!("dispose audit: collected {collected} stale context handles"),
+                );
+            }
+            u8::from(disposed_now) as i32
         }
         Some(crate::handles::LifecycleHandle::Effect(effect)) => {
             effect.dispose();

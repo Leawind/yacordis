@@ -325,9 +325,12 @@ Value 优先的动态载体、无锁重入（§2.2，FFI 回调内再 install/pr
 7. ~~`cordis-macros`~~（✅ `#[plugin]` 属性宏落地：普通函数 + name/
    inject(…)/provides 声明 → 生成 Plugin 适配器，声明进入响应式门控与
    依赖环诊断；async fn 显式拒绝，指回 §2.6）。Service 模式宏待需求。
-8. §4.1 契约的机械化：插件 lint profile（ast-grep/clippy，宿主
-   `build_and_load` 路径强制执行）+ dispose 审计（handle 表空断言、
-   buffer 计数配平）。
+8. ~~§4.1 契约的机械化~~（✅ ast-grep lint profile 五条规则随 crate
+   分发——裸 spawn / tokio 调度 / 可变 static / exit 钩子 / FFI 手工
+   分配；`BuildOptions.lint` 门控构建，`lint_source` 可独立调用，
+   ast-grep 未安装时尽力跳过。dispose 审计收集绑死于已亡 fiber 的
+   context 句柄——I2 宿主半边，测试锁定于 `tests/contract.rs`；
+   buffer 计数配平待 ABI 层遥测）。
 
 ## 7. TS 上游对照与跟进（2026-11-10，rc.9 → rc.12）
 

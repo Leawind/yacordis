@@ -16,6 +16,7 @@ fn fixture_dir() -> std::path::PathBuf {
 fn build_options() -> BuildOptions {
     BuildOptions {
         offline: true,
+        lint: false,
         target_dir: Some(
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../target/loader-integration"),
         ),

@@ -158,6 +158,7 @@ fn build_fixture() -> PathBuf {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/demo-plugin");
     let options = BuildOptions {
         offline: true,
+        lint: false,
         target_dir: Some(
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../target/loader-integration"),
         ),

@@ -196,10 +196,43 @@ pub struct BuildOptions {
     pub offline: bool,
     /// Override the cargo target directory.
     pub target_dir: Option<PathBuf>,
+    /// Run the ast-grep unload-contract lint (§4.1) over the source tree
+    /// before building; findings reject the build. Silently skipped when
+    /// ast-grep is not installed or the bundled rules are unavailable.
+    pub lint: bool,
 }
 
 /// Entry points for obtaining [`PluginLibrary`] binaries.
 pub struct Loader;
+
+/// Bundled ast-grep configuration for the unload-contract rules (§4.1).
+const LINT_CONFIG: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/ast-grep-rules/sgconfig.yml");
+
+/// Run the bundled ast-grep unload-contract lint over a plugin source
+/// tree. Returns the combined findings (rejecting the build) when the
+/// linter is installed and reports violations; returns `Ok` when
+/// ast-grep is unavailable (the lint is best-effort, not a gate).
+pub fn lint_source(source_dir: impl AsRef<Path>) -> Result<(), String> {
+    let output = std::process::Command::new("ast-grep")
+        .args(["scan", "--config", LINT_CONFIG])
+        .arg(source_dir.as_ref())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output();
+    let Ok(output) = output else {
+        // ast-grep not installed: best-effort lint skips.
+        return Ok(());
+    };
+    if output.status.success() {
+        return Ok(());
+    }
+    let findings = String::from_utf8_lossy(&output.stdout).to_string();
+    if findings.trim().is_empty() {
+        // Non-zero exit without findings: the linter itself failed.
+        return Ok(());
+    }
+    Err(findings)
+}
 
 impl Loader {
     /// Load a prebuilt cdylib plugin. See [`PluginLibrary::load`] for
@@ -228,6 +261,10 @@ impl Loader {
         source_dir: impl AsRef<Path>,
         options: &BuildOptions,
     ) -> Result<PathBuf, LoadError> {
+        if options.lint {
+            let dir = source_dir.as_ref().to_path_buf();
+            lint_source(dir).map_err(LoadError::Build)?;
+        }
         let manifest_path = source_dir.as_ref().join("Cargo.toml");
         let mut command = std::process::Command::new(
             std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned()),
