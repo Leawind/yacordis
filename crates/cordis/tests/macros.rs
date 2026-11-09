@@ -13,7 +13,7 @@ use serde_json::{Value, json};
     inject(required = ["config"], optional = ["logger"]),
     provides = ["db"]
 )]
-fn database_plugin(ctx: &Context, config: &Value) -> PluginResult {
+fn database_plugin(ctx: &Context, _config: &Value) -> PluginResult {
     ctx.provide("db", Arc::new(json!({ "connected": true })))?;
     Ok(())
 }

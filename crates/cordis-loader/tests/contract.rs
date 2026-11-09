@@ -41,7 +41,7 @@ fn lint_rejects_contract_violations_and_passes_clean_sources() {
         "fn leaky() {\n    std::thread::spawn(|| 1);\n    static mut BAD: u32 = 0;\n}\n",
     )
     .expect("write violation");
-    let findings = lint_source(&violating).err().expect("violations found");
+    let findings = lint_source(&violating).expect_err("violations found");
     assert!(findings.contains("cordis-no-raw-thread-spawn"), "{findings}");
     assert!(findings.contains("cordis-no-mutable-static"), "{findings}");
 
@@ -82,8 +82,7 @@ fn lint_gated_build_rejects_violating_sources() {
         ..Default::default()
     };
     let error = Loader::build(&violating, &options)
-        .err()
-        .expect("lint-gated build must reject");
+        .expect_err("lint-gated build must reject");
     assert!(
         error.to_string().contains("cordis-no-raw-thread-spawn"),
         "{error}"

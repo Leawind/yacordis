@@ -187,8 +187,8 @@ Value 优先的动态载体、无锁重入（§2.2，FFI 回调内再 install/pr
 均安全，集成测试覆盖）。
 
 **边界限制（有意为之）**：跨 ABI 的服务值是 `serde_json::Value`
-（typed downcast 仅 native 侧可用）；插件侧监听器不提供手动移除句柄
-（随 fiber 卸载自动清理）。
+（typed downcast 仅 native 侧可用）；插件侧监听器可经返回的
+`ListenerHandle` 手动移除（随 fiber 卸载自动清理仍是主路径）。
 
 ### 4.1 卸载限制契约（插件规范不变量）
 
@@ -293,7 +293,8 @@ Value 优先的动态载体、无锁重入（§2.2，FFI 回调内再 install/pr
    尚未落地——强断言需配 `wait_for`/`quiesce`。彻底消除需把生命周期
    改造成单线程 actor 执行器，属异步里程碑的架构决策。
 2. typed 事件每监听器重复反序列化（不变，量级小）。
-3. 插件侧监听器无手动移除句柄（不变，随 fiber 卸载自动清理覆盖主场景）。
+3. ~~插件侧监听器无手动移除句柄~~（✅ 已解决：`ctx.on`/`ctx.once`
+   返回 `ListenerHandle`，可 `dispose()` 手动移除；§4 边界限制同步更新）。
 4. `Fiber.parent`/`Fiber.isolate` 字段暂只写不读（为 scope 内省预留）。
 
 ## 6. 路线图

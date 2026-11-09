@@ -14,7 +14,7 @@ let db = ctx.plugin(DatabasePlugin, serde_json::json!({ "uri": "pg://localhost" 
 
 // 声明依赖的插件被响应式驱动：服务出现即激活，消失即停用
 let app = ctx.plugin(AppPlugin, serde_json::json!(null))?;
-db.dispose()?;                    // app -> Pending，副作用完全回滚
+db.dispose();                     // app -> Pending，副作用完全回滚
 ctx.plugin(DatabasePlugin, ...)?; // app -> Active，无需重启进程
 ```
 
