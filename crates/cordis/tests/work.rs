@@ -329,3 +329,107 @@ fn on_done_disposing_its_own_fiber_does_not_deadlock() {
     assert_eq!(rx.recv_timeout(Duration::from_secs(1)), Ok("disposed"));
     assert_eq!(worker.state(), FiberState::Disposed);
 }
+
+#[test]
+fn double_wake_delivers_exactly_one_completion() {
+    use std::sync::atomic::AtomicUsize;
+
+    let ctx = Context::new();
+    let (tx, rx) = mpsc::channel::<&'static str>();
+
+    let worker = ctx
+        .plugin(
+            move |ctx: &Context, _: &Value| -> PluginResult {
+                let (waker_tx, waker_rx) = mpsc::channel::<Waker>();
+                let polls = Arc::new(AtomicUsize::new(0));
+                let polls_for_future = polls.clone();
+
+                // Yields once; the second poll completes it.
+                let fut = std::future::poll_fn(move |cx: &mut TaskContext<'_>| {
+                    let n = polls_for_future.fetch_add(1, Ordering::SeqCst);
+                    if n == 0 {
+                        let _ = waker_tx.send(cx.waker().clone());
+                        Poll::Pending
+                    } else {
+                        Poll::Ready(Ok(json!("ready")))
+                    }
+                });
+
+                let tx = tx.clone();
+                ctx.spawn_future(
+                    "double-wake",
+                    fut,
+                    move |_, outcome| {
+                        let _ = tx.send(outcome_tag(&outcome));
+                    },
+                )?;
+
+                // Wake twice after completion is reachable: the second
+                // enqueue polls a consumed future and must be a no-op.
+                thread::spawn(move || {
+                    let waker = waker_rx.recv_timeout(Duration::from_secs(2)).expect("waker");
+                    thread::sleep(Duration::from_millis(20));
+                    waker.wake_by_ref();
+                    waker.wake();
+                });
+                Ok(())
+            },
+            json!(null),
+        )
+        .expect("install worker");
+
+    assert_eq!(rx.recv_timeout(Duration::from_secs(2)), Ok("done"));
+    // Allow any stray duplicate delivery to surface.
+    thread::sleep(Duration::from_millis(100));
+    assert!(
+        rx.try_recv().is_err(),
+        "no duplicate completion after a double wake"
+    );
+    worker.dispose();
+}
+
+#[test]
+fn abort_before_first_poll_never_runs_the_future() {
+    use std::sync::atomic::AtomicUsize;
+
+    let ctx = Context::new();
+    let (tx, rx) = mpsc::channel::<&'static str>();
+    let polls = Arc::new(AtomicUsize::new(0));
+
+    let worker = ctx
+        .plugin(
+            {
+                let polls_body = polls.clone();
+                move |ctx: &Context, _: &Value| -> PluginResult {
+                    let polls_for_future = polls_body.clone();
+                    let tx = tx.clone();
+                    let fut = std::future::poll_fn(move |_: &mut TaskContext<'_>| {
+                        polls_for_future.fetch_add(1, Ordering::SeqCst);
+                        Poll::Pending::<Result<Value, PluginError>>
+                    });
+                    let handle = ctx.spawn_future(
+                        "never-polled",
+                        fut,
+                        move |_, outcome| {
+                            let _ = tx.send(outcome_tag(&outcome));
+                        },
+                    )?;
+                    // Cancel before the executor can schedule the first poll.
+                    handle.cancel();
+                    Ok(())
+                }
+            },
+            json!(null),
+        )
+        .expect("install worker");
+
+    assert_eq!(rx.recv_timeout(Duration::from_secs(1)), Ok("cancelled"));
+    // Give a hypothetical buggy executor ample time to poll anyway.
+    thread::sleep(Duration::from_millis(100));
+    assert_eq!(
+        polls.load(Ordering::SeqCst),
+        0,
+        "an aborted-before-first-poll future must never run"
+    );
+    worker.dispose();
+}

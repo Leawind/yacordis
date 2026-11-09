@@ -67,6 +67,71 @@
 //! # }
 //! ```
 //!
+//! # The concurrency substrate (§ design.md 2.6)
+//!
+//! Blocking or async work never blocks the scheduling domain: submit it
+//! through the framework, and unload drains it before rolling back.
+//!
+//! ```
+//! use cordis::prelude::*;
+//! use serde_json::json;
+//!
+//! # fn demo() -> Result<(), cordis::CordisError> {
+//! let ctx = Context::new();
+//! let worker = ctx.plugin(|ctx: &Context, _: &serde_json::Value| -> PluginResult {
+//!     let (tx, rx) = std::sync::mpsc::channel();
+//!     ctx.run_blocking("compute", |_| Ok(json!(21)), move |ctx, outcome| {
+//!         if let WorkOutcome::Done(value) = outcome {
+//!             ctx.emit("answer", &json!({ "value": value }));
+//!             let _ = tx.send(());
+//!         }
+//!     })?;
+//!     rx.recv().map_err(|e| PluginError::new(e.to_string()))?;
+//!     Ok(())
+//! }, json!(null))?;
+//! assert!(worker.is_active());
+//! worker.dispose();
+//! # Ok(())
+//! # }
+//! # demo().unwrap();
+//! ```
+//!
+//! # Intercepts and in-place replacement
+//!
+//! ```
+//! use cordis::prelude::*;
+//! use serde_json::{json, Value};
+//! use std::sync::Arc;
+//!
+//! # fn demo() -> Result<(), cordis::CordisError> {
+//! let ctx = Context::new();
+//! let plugin: Arc<dyn Plugin> = Arc::new(
+//!     |ctx: &Context, _: &Value| -> PluginResult {
+//!         ctx.provide("cfg", Arc::new(json!({ "host": "localhost", "port": 80 })))?;
+//!         Ok(())
+//!     },
+//! );
+//! let provider = ctx.plugin_dyn(plugin.clone(), json!(null))?;
+//!
+//! // A JSON service can be layered with config overrides; the nearest
+//! // fiber wins, entries die with their fiber.
+//! let viewer = ctx.plugin(|ctx: &Context, _: &Value| -> PluginResult {
+//!     ctx.intercept("cfg", json!({ "port": 8080 }))?;
+//!     let cfg = ctx.get::<Value>("cfg").unwrap();
+//!     assert_eq!(cfg["port"], json!(8080));
+//!     Ok(())
+//! }, json!(null))?;
+//! assert!(viewer.is_active());
+//!
+//! // Swap the provider in place: identity (id/config) survives, the
+//! // body re-runs, dependents observe the new service values.
+//! let _handles = ctx.replace_plugin(plugin, Arc::new(|_: &Context, _: &Value| Ok(())))?;
+//! assert!(provider.is_active(), "the fiber keeps its identity");
+//! # Ok(())
+//! # }
+//! # demo().unwrap();
+//! ```
+//!
 //! See `docs/design.md` in the repository for the concept mapping from
 //! the paper / cordis v4 to this crate, and for the list of deliberate
 //! divergences.
