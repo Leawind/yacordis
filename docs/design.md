@@ -121,6 +121,31 @@ v4 的六态中 `LOADING`/`UNLOADING` 在同步世界里是即时完成的中间
   （本节实现曾因此死锁，测试锁定于 `tests/work.rs`）。
 - `parallel`/`serial` 分发模式需要 async 监听器聚合，待需求出现。
 
+### 2.7 服务拦截（intercept）
+
+上游 PR #90/#206 的 intercept 语义研读结论：intercept 是**沿上下文树
+的服务配置分层覆盖**——每层 ctx 可为某服务注入一段配置覆盖，解析时
+沿原型链（我们这里是 fiber 链）收集各层值，浅合并（`Object.assign`
+语义），**最近祖先优先**，服务自身 inject 的元数据为基底；不是
+get 时值拦截。
+
+cordis-rust 的首期落地（`ctx.intercept(name, value)`，JSON 服务）：
+
+- **可见性向下**：fiber 上登记的层，自己与后代可见；兄弟与祖先
+  不可见（与上游原型链语义一致）。解析沿请求 ctx 的 fiber 祖先链
+  向上收集，折叠方向为从最远到最近（最近者胜）。
+- **浅合并**：对象层逐键覆盖基底；非对象层整体替换。typed 服务
+  不参与（返回原值）。
+- **登记即 effect**：层随登记 fiber 卸载而移除——I2 的可证明清理
+  自动覆盖 intercept。
+- **纯视图层**：不影响 epoch、不触发 notify、不参与依赖解析——
+  提供者与依赖方对此无感知，provider 不因 intercept 重载。
+- 与上游的偏差：v4 的 Service 类携带 metadata 并自定义
+  `mergeIntercept`；我们的 typed 服务是无元数据的裸值，故 typed
+  通道不参与合并（JSON 通道承载全部拦截语义）。`resolveConfig`
+  的职责由 schema 默认值（§6.4）承担；`check` 谓词暂缺（服务实例
+  化校验，待需求）。
+
 ## 3. 与 TS 版的有意分歧（截至 M1）
 
 1. **纯同步**：disposer/apply 不返回 Future；`parallel`/`serial` 的
@@ -318,7 +343,9 @@ Value 优先的动态载体、无锁重入（§2.2，FFI 回调内再 install/pr
    解析；经 `Plugin::schema` 挂接，install 前拒绝 → `Failed` 零副作用，
    update 拒绝 → 保留旧配置，通过的配置以解析后形态持久化。FFI 插件
    暂在 body 内自行校验）。isolate 已落地（§5.3），依赖环诊断已落地
-   （§7）；**服务 intercept 上游 #90 语义仍需研读**，等下一步。
+   （§7）；**服务 intercept 首期已落地**（§2.7：fiber 链分层覆盖、
+   nearest-wins 浅合并、JSON 服务，effect 登记随卸载回滚）；自定义
+   `mergeIntercept`（typed 服务元数据合并）与 `check` 谓词待需求。
 5. 原位插件替换（对齐上游 `registry.replace()`，#266）：✅ native 侧
    已落地（`Context::replace_plugin` + `internal/replace`，见 §7.1）；
    FFI 侧对应 `PluginLibrary` 级替换（keep-mapped 下旧库留驻、新库接管

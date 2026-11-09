@@ -13,6 +13,8 @@
 use std::any::Any;
 use std::sync::{Arc, Mutex, Weak};
 
+use serde_json::Value;
+
 use crate::context::{Context, Core, IsolateLabel, ServiceKey};
 use crate::effect::{EffectHandle, attach_effect};
 use crate::error::CordisError;
@@ -148,7 +150,84 @@ pub(crate) fn resolve_value(
     ctx: &Context,
     name: &str,
 ) -> Option<Arc<dyn Any + Send + Sync>> {
-    resolve(core, ctx, name).map(|impl_| impl_.get_value())
+    let base = resolve(core, ctx, name).map(|impl_| impl_.get_value())?;
+    apply_intercepts(ctx, name, base)
+}
+
+/// Register an intercept override on the current fiber (§2.7). The
+/// entry is an effect: unloading the fiber removes it, keeping I2's
+/// provable cleanup. Only JSON services observe intercepts.
+pub(crate) fn set_intercept(
+    fiber: &Arc<Fiber>,
+    name: String,
+    value: Value,
+) -> Result<(), CordisError> {
+    {
+        let mut intercepts = fiber.intercepts.lock().unwrap();
+        intercepts.insert(name.clone(), value);
+    }
+    let handle = crate::effect::EffectHandle::new(format!("ctx.intercept({name})"));
+    let cleanup_fiber = fiber.clone();
+    handle.push(Box::new(move || {
+        if let Some(fiber) = cleanup_fiber.self_weak.get().and_then(std::sync::Weak::upgrade) {
+            fiber.intercepts.lock().unwrap().remove(&name);
+        }
+    }));
+    crate::effect::attach_effect(fiber, handle);
+    Ok(())
+}
+
+/// Collect intercept values for `name` along the fiber chain, nearest
+/// fiber first.
+fn collect_intercepts(ctx: &Context, name: &str) -> Vec<Value> {
+    let mut values = Vec::new();
+    let mut current = ctx.fiber.upgrade();
+    let mut hops = 0;
+    while let Some(fiber) = current {
+        if let Some(value) = fiber.intercepts.lock().unwrap().get(name) {
+            values.push(value.clone());
+        }
+        current = fiber.parent.as_ref().and_then(std::sync::Weak::upgrade);
+        hops += 1;
+        if hops > 4096 {
+            // Malformed parent chain: stop rather than spin forever.
+            break;
+        }
+    }
+    values
+}
+
+/// Intercept view (§2.7, upstream PR #90/#206 adapted): JSON services
+/// are merged with the intercept layers along the fiber chain, nearest
+/// fiber winning. Objects merge shallowly (Object.assign semantics);
+/// a non-object layer replaces the result entirely. Typed services are
+/// returned untouched. View-layer only: no epoch or notify impact.
+fn apply_intercepts(
+    ctx: &Context,
+    name: &str,
+    base: Arc<dyn Any + Send + Sync>,
+) -> Option<Arc<dyn Any + Send + Sync>> {
+    let layers = collect_intercepts(ctx, name);
+    if layers.is_empty() {
+        return Some(base);
+    }
+    let Ok(base_value) = base.clone().downcast::<Value>() else {
+        // Typed service: intercepts do not participate.
+        return Some(base);
+    };
+    // Fold farthest → nearest so the nearest fiber wins.
+    let mut merged = (*base_value).clone();
+    for layer in layers.iter().rev() {
+        match (&mut merged, layer) {
+            (Value::Object(map), Value::Object(layer_map)) => {
+                for (key, value) in layer_map {
+                    map.insert(key.clone(), value.clone());
+                }
+            }
+            _ => merged = layer.clone(),
+        }
+    }
+    Some(Arc::new(merged))
 }
 
 /// Recompute dependencies of every fiber injecting any of the touched

@@ -307,7 +307,7 @@ impl Context {
     }
 
     /// Sugar for a closure plugin with declared dependencies:
-    /// `ctx.inject(&["database"], |ctx| { … })`.
+    /// `ctx.inject(Inject::required(&["database"]), |ctx| { … })`.
     pub fn inject<F>(&self, deps: Inject, f: F) -> Result<FiberHandle, CordisError>
     where
         F: Fn(&Context) -> PluginResult + Send + Sync + 'static,
@@ -399,6 +399,21 @@ impl Context {
         value: Arc<T>,
     ) -> Result<(), CordisError> {
         self.set_raw(name, value as Arc<dyn Any + Send + Sync>)
+    }
+
+    /// Set an intercept override for a JSON service (§2.7): JSON values
+    /// resolved through this context are merged with the intercept
+    /// layers along the fiber chain, the nearest fiber winning
+    /// (shallow object merge, non-object layers replace). The entry is
+    /// an effect of the current fiber — unload removes it — and never
+    /// affects epochs or notifications (view-layer only).
+    pub fn intercept(
+        &self,
+        name: impl Into<String>,
+        value: impl Into<Value>,
+    ) -> Result<(), CordisError> {
+        let fiber = self.active_fiber("set an intercept")?;
+        crate::reflect::set_intercept(&fiber, name.into(), value.into())
     }
 
     /// Resolve a service by name within this context's isolation group.

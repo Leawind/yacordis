@@ -159,6 +159,10 @@ pub(crate) struct Fiber {
     /// The isolation group map this fiber was installed under.
     #[allow(dead_code)] // read via contexts; kept for scope introspection
     pub(crate) isolate: Arc<crate::context::IsolateMap>,
+    /// Service intercept overrides (§2.7): name → JSON value, merged
+    /// nearest-fiber-first over the provided base at resolution time.
+    /// Entries are effects; unload removes them.
+    pub(crate) intercepts: Arc<Mutex<HashMap<String, Value>>>,
 }
 
 #[derive(Default)]
@@ -254,6 +258,7 @@ impl Fiber {
             )),
             schedule: Mutex::new(ScheduleState::default()),
             isolate: Arc::new(crate::context::IsolateMap::default()),
+            intercepts: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -283,6 +288,7 @@ impl Fiber {
             )),
             schedule: Mutex::new(ScheduleState::default()),
             isolate,
+            intercepts: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
