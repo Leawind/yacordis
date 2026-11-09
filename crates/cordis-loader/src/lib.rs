@@ -47,9 +47,14 @@
 mod adapter;
 mod handles;
 mod loader;
+mod registry;
 mod vtable;
 
 pub use loader::{BuildOptions, LoadError, Loader, PluginLibrary, PluginManifest};
+pub use registry::{
+    Constraint, Entry, RegistryError, RegistryIndex, Repository, Sha256Verifier, Verifier,
+    sha256_hex, sha256 as sha256_digest, Version,
+};
 
 /// Re-export of the ABI crate so hosts and plugins can agree on types.
 pub use cordis_plugin_api as abi;
