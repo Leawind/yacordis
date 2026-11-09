@@ -420,8 +420,8 @@ impl Repository {
             };
             let path = Loader::fetch(&url, &self.cache_dir)
                 .map_err(|e| RegistryError::Fetch(e.to_string()))?;
-            return std::fs::read(&path)
-                .map_err(|e| RegistryError::Fetch(format!("cannot read artifact: {e}")));
+            std::fs::read(&path)
+                .map_err(|e| RegistryError::Fetch(format!("cannot read artifact: {e}")))
         }
         #[cfg(not(feature = "download"))]
         {
