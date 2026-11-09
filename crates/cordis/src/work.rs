@@ -42,6 +42,12 @@ use crate::error::{CordisError, PluginError};
 use crate::fiber::Fiber;
 use crate::logger::LogLevel;
 
+/// A work-completion callback: invoked by the framework with the
+/// outcome once the unit finished (or was cancelled).
+pub type CompletionCallback = Box<dyn FnOnce(&Context, WorkOutcome) + Send>;
+/// The blocking work itself: pure computation against a cancel token.
+pub type WorkClosure = Box<dyn FnOnce(&CancellationToken) -> Result<Value, PluginError> + Send>;
+
 /// Cooperative cancellation token handed to a blocking work unit. The
 /// unit must poll it for timely unloads; a unit that ignores it holds
 /// the unloading fiber until it returns. Cloneable so hosts can keep
@@ -102,7 +108,7 @@ pub(crate) struct WorkUnit {
     /// across the callback, so `join` waits for plugin code to finish.
     done: Mutex<bool>,
     signal: Condvar,
-    on_done: Mutex<Option<Box<dyn FnOnce(&Context, WorkOutcome) + Send>>>,
+    on_done: Mutex<Option<CompletionCallback>>,
     /// Executor plumbing for futures: the shared queue state and the
     /// task carrying the future (weak: the executor owns it).
     exec: Option<Arc<ExecInner>>,
@@ -180,7 +186,7 @@ fn deliver(unit: &Arc<WorkUnit>, outcome: WorkOutcome) {
     unit.signal.notify_all();
 }
 
-fn run_worker(unit: Arc<WorkUnit>, work: Box<dyn FnOnce(&CancellationToken) -> Result<Value, PluginError> + Send>) {
+fn run_worker(unit: Arc<WorkUnit>, work: WorkClosure) {
     let token = CancellationToken(unit.cancelled.clone());
     let outcome = match catch_unwind(AssertUnwindSafe(|| work(&token))) {
         Ok(Ok(value)) => {

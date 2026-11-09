@@ -79,7 +79,7 @@ impl HandleTable {
             .filter_map(|(id, object)| match object {
                 HostObject::Context(ctx) => {
                     let bound = ctx.fiber().id().unwrap_or(u64::MAX);
-                    (bound == fiber_id).then(|| *id)
+                    (bound == fiber_id).then_some(*id)
                 }
                 _ => None,
             })

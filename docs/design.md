@@ -298,6 +298,11 @@ Value 优先的动态载体、无锁重入（§2.2，FFI 回调内再 install/pr
 
 ## 6. 路线图
 
+**状态（2026-11-10）：1–8 全部落地**。余量：FFI 侧 `spawn_future`
+（future 构造跨界是独立设计问题）、服务 intercept（研读上游 PR #90
+语义）、非对称签名（需加密依赖）、Service 模式宏、ABI 遥测（buffer
+配平计数）。
+
 1. ~~M2：`cordis-plugin-api` + `cordis-loader`~~（✅ 见 §4）。
 2. ~~异步生命周期~~ → 重定义为**框架中介并发**并已落地（§2.6：
    `run_blocking` / `spawn_future` + 排空先于回滚；FFI 侧经 ABI v2

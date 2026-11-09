@@ -39,12 +39,18 @@ ctx.plugin(DatabasePlugin, ...)?; // app -> Active，无需重启进程
 | crate | 状态 | 说明 |
 |---|---|---|
 | `cordis` | ✅ M1 | 核心：Context / Fiber / Effect / 事件 / 服务 / isolate / 依赖环诊断 |
-| `cordis-plugin-api` | ✅ M2 | 插件侧稳定 C ABI：Plugin trait + `register_plugin!` |
-| `cordis-loader` | ✅ M2 | 运行时安装 cdylib 二进制插件（文件 / cargo 构建 / URL 下载） |
+| `cordis-plugin-api` | ✅ M2 | 插件侧稳定 C ABI（v2）：Plugin trait + `register_plugin!` + `run_blocking` |
+| `cordis-loader` | ✅ M2 | 运行时安装 cdylib 二进制插件（文件 / cargo 构建 / URL 下载）+ 仓库索引 + 卸载契约 lint |
 | `cordis-timer` | ✅ M3 | 后台定时轮：setTimeout/setInterval/sleep，随作用域自动取消 |
 | `cordis-logger` | ✅ M3 | 分级日志服务 + 可插拔 sink，按插件 scope 归属 |
 | `cordis-macros` | ✅ | `#[plugin]` 属性宏：普通函数 + 声明 → Plugin 适配器 |
-| 配置校验 / 插件仓库索引 | 规划中 | 见 `docs/design.md` §6 路线图 |
+
+核心能力之外的里程碑全部落地：框架中介并发（`run_blocking`/
+`spawn_future`，排空先于回滚）、`replace_plugin` 原位热替换、配置
+schema 校验（resolveConfig 等价默认值）、插件仓库索引（semver +
+sha-256）、卸载限制契约机械化（ast-grep lint + dispose 审计）——
+见 `docs/design.md` §6。范式验证见孤儿分支 `orphan/dsh-demo`
+（dsh-like agent harness，工作树 `../dsh-demo`）。
 
 设计细节与 TS 版分歧清单、上游 issue 对照见
 [docs/design.md](docs/design.md)（§3、§7）。

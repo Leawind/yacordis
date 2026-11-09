@@ -345,13 +345,12 @@ impl Context {
         let mut first_error = None;
         for fiber in fibers {
             crate::registry::move_fiber(&self.core, &fiber, new_key, new_name.clone(), &new);
-            let result = fiber.replace_plugin(&self.core, new.clone());
+            if let Err(err) = fiber.replace_plugin(&self.core, new.clone()) {
+                first_error.get_or_insert(err);
+            }
             handles.push(FiberHandle {
                 fiber: Arc::downgrade(&fiber),
             });
-            if result.is_err() {
-                first_error.get_or_insert(result.unwrap_err());
-            }
         }
         match first_error {
             Some(err) => Err(err),
