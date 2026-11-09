@@ -731,7 +731,10 @@ impl FiberHandle {
 
     /// Update the config and restart the fiber (v4 `fiber.update`).
     /// Clears a previous failure. Listeners on `internal/update` may
-    /// transform the config through the middleware chain.
+    /// transform the config through the middleware chain. When the
+    /// plugin declares a schema, the (waterfall-transformed) config is
+    /// validated and resolved first; a rejected config is an error and
+    /// the fiber keeps its previous config and state.
     pub fn update(&self, config: impl Into<Value>) -> Result<(), CordisError> {
         let fiber = self.require("update a fiber")?;
         if matches!(fiber.inner.lock().unwrap().state, FiberState::Disposed) {
@@ -747,6 +750,24 @@ impl FiberHandle {
             config.into(),
             Box::new(std::convert::identity),
         )?;
+        // Resolve through the plugin's schema before committing: a
+        // rejected update must not touch the running fiber.
+        let config = {
+            let plugin = fiber.inner.lock().unwrap().plugin.clone();
+            match plugin.and_then(|p| p.schema()) {
+                Some(schema) => schema.resolve(&config).map_err(|diagnostics| {
+                    CordisError::PluginError(PluginError(
+                        diagnostics
+                            .iter()
+                            .map(|d| d.to_string())
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                            .into(),
+                    ))
+                })?,
+                None => config,
+            }
+        };
         {
             let mut inner = fiber.inner.lock().unwrap();
             inner.config = config;

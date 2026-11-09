@@ -107,6 +107,15 @@ pub trait Plugin: Send + Sync + 'static {
         Vec::new()
     }
 
+    /// Config schema. When declared, every install and update validates
+    /// (and resolves — defaults are filled in) the config through it
+    /// before the body runs; a rejected config leaves the fiber `Failed`
+    /// with no side effects, and `update` refuses it with an error while
+    /// keeping the previous config. See [`crate::schema`].
+    fn schema(&self) -> Option<crate::schema::Schema> {
+        None
+    }
+
     /// The plugin body. Called with a context scoped to this fiber and
     /// the plugin config. Registrations made on the context during the
     /// call are tracked automatically and reverted on dispose.

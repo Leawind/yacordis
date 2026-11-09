@@ -83,6 +83,7 @@ mod logger;
 mod plugin;
 mod reflect;
 mod registry;
+mod schema;
 mod work;
 
 pub use context::{Context, FiberHandle};
@@ -93,6 +94,7 @@ pub use events::Event;
 pub use fiber::FiberState;
 pub use logger::{DiscardLogger, LogLevel, Logger, StderrLogger};
 pub use plugin::{Inject, Plugin};
+pub use schema::{Diagnostic, Schema, SchemaBuilder};
 pub use serde_json;
 pub use work::{CancellationToken, WorkHandle, WorkOutcome};
 
@@ -118,6 +120,7 @@ pub mod prelude {
     pub use crate::logger::{DiscardLogger, LogLevel, Logger, StderrLogger};
     pub use crate::plugin;
     pub use crate::plugin::{Inject, Plugin};
+    pub use crate::schema::{Diagnostic, Schema, SchemaBuilder};
     pub use crate::serde_json;
     pub use crate::work::{CancellationToken, WorkHandle, WorkOutcome};
 }

@@ -508,6 +508,45 @@ impl Fiber {
             (inner.plugin.clone(), inner.config.clone())
         };
         let Some(plugin) = plugin else { return };
+        // Schema resolution runs before the body: a rejected config
+        // leaves the fiber Failed with no side effects, an accepted one
+        // is stored resolved (defaults filled) so restarts persist them.
+        let config = match plugin.schema() {
+            Some(schema) => match schema.resolve(&config) {
+                Ok(resolved) => {
+                    let mut inner = self.inner.lock().unwrap();
+                    if inner.disposed {
+                        return;
+                    }
+                    inner.config = resolved.clone();
+                    resolved
+                }
+                Err(diagnostics) => {
+                    let message = diagnostics
+                        .iter()
+                        .map(|d| d.to_string())
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    self.log(
+                        core,
+                        LogLevel::Error,
+                        &format!("config rejected: {message}"),
+                    );
+                    {
+                        let mut inner = self.inner.lock().unwrap();
+                        inner.error = Some(PluginError::new(format!(
+                            "config rejected: {message}"
+                        )));
+                        inner.epoch = None;
+                    }
+                    if let Some(old) = self.set_state(FiberState::Failed) {
+                        events::emit_status(core, self, old);
+                    }
+                    return;
+                }
+            },
+            None => config,
+        };
         lifecycle_trace::trace("reload-enter", self);
         self.log(core, LogLevel::Debug, "reloading");
 

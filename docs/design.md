@@ -307,9 +307,12 @@ Value 优先的动态载体、无锁重入（§2.2，FFI 回调内再 install/pr
 3. ~~`cordis-timer` / `cordis-logger`~~（✅ M3：同步线程定时轮 + 分级
    日志服务；`sleep` 以 effect 挂靠 fiber，卸载即唤醒，详见各自 crate
    文档）。
-4. 配置校验（Standard Schema 等价物）与 intercept——isolate 已落地
-   （§5.3），依赖环诊断已落地（§7）；intercept 上游已收敛（PR #90 +
-   #206），设计可启动。
+4. ~~配置校验~~（✅ `cordis::schema`：可组合 DSL——类型/长度/范围/
+   枚举/数组/对象字段校验，`opt_default` 即 resolveConfig 等价的默认值
+   解析；经 `Plugin::schema` 挂接，install 前拒绝 → `Failed` 零副作用，
+   update 拒绝 → 保留旧配置，通过的配置以解析后形态持久化。FFI 插件
+   暂在 body 内自行校验）。isolate 已落地（§5.3），依赖环诊断已落地
+   （§7）；**服务 intercept 上游 #90 语义仍需研读**，等下一步。
 5. 原位插件替换（对齐上游 `registry.replace()`，#266）：✅ native 侧
    已落地（`Context::replace_plugin` + `internal/replace`，见 §7.1）；
    FFI 侧对应 `PluginLibrary` 级替换（keep-mapped 下旧库留驻、新库接管
