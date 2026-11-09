@@ -43,7 +43,8 @@ ctx.plugin(DatabasePlugin, ...)?; // app -> Active，无需重启进程
 | `cordis-loader` | ✅ M2 | 运行时安装 cdylib 二进制插件（文件 / cargo 构建 / URL 下载） |
 | `cordis-timer` | ✅ M3 | 后台定时轮：setTimeout/setInterval/sleep，随作用域自动取消 |
 | `cordis-logger` | ✅ M3 | 分级日志服务 + 可插拔 sink，按插件 scope 归属 |
-| macros / 异步生命周期 / 插件仓库 | 规划中 | 见 `docs/design.md` §6 路线图 |
+| `cordis-macros` | ✅ | `#[plugin]` 属性宏：普通函数 + 声明 → Plugin 适配器 |
+| 配置校验 / 插件仓库索引 | 规划中 | 见 `docs/design.md` §6 路线图 |
 
 设计细节与 TS 版分歧清单、上游 issue 对照见
 [docs/design.md](docs/design.md)（§3、§7）。

@@ -86,12 +86,14 @@ mod registry;
 mod work;
 
 pub use context::{Context, FiberHandle};
+pub use cordis_macros::plugin;
 pub use effect::{Disposer, EffectHandle, EffectOutcome};
 pub use error::{CordisError, PluginError, PluginResult};
 pub use events::Event;
 pub use fiber::FiberState;
 pub use logger::{DiscardLogger, LogLevel, Logger, StderrLogger};
 pub use plugin::{Inject, Plugin};
+pub use serde_json;
 pub use work::{CancellationToken, WorkHandle, WorkOutcome};
 
 /// Internal diagnostics (used by the stress tests).
@@ -114,6 +116,8 @@ pub mod prelude {
     pub use crate::events::Event;
     pub use crate::fiber::FiberState;
     pub use crate::logger::{DiscardLogger, LogLevel, Logger, StderrLogger};
+    pub use crate::plugin;
     pub use crate::plugin::{Inject, Plugin};
+    pub use crate::serde_json;
     pub use crate::work::{CancellationToken, WorkHandle, WorkOutcome};
 }

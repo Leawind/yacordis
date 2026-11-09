@@ -315,7 +315,9 @@ Value 优先的动态载体、无锁重入（§2.2，FFI 回调内再 install/pr
    FFI 侧对应 `PluginLibrary` 级替换（keep-mapped 下旧库留驻、新库接管
    fibers）待做。
 6. 插件仓库索引（版本解析、依赖声明、签名校验，叠加在 `fetch` 之上）。
-7. `cordis-macros`（`#[plugin]`/`#[inject]` 派生宏、Service 模式宏）。
+7. ~~`cordis-macros`~~（✅ `#[plugin]` 属性宏落地：普通函数 + name/
+   inject(…)/provides 声明 → 生成 Plugin 适配器，声明进入响应式门控与
+   依赖环诊断；async fn 显式拒绝，指回 §2.6）。Service 模式宏待需求。
 8. §4.1 契约的机械化：插件 lint profile（ast-grep/clippy，宿主
    `build_and_load` 路径强制执行）+ dispose 审计（handle 表空断言、
    buffer 计数配平）。
