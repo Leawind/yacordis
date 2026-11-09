@@ -51,6 +51,7 @@ pub(crate) const INTERNAL_PLUGIN: &str = "internal/plugin";
 pub(crate) const INTERNAL_STATUS: &str = "internal/status";
 pub(crate) const INTERNAL_SERVICE: &str = "internal/service";
 pub(crate) const INTERNAL_UPDATE: &str = "internal/update";
+pub(crate) const INTERNAL_REPLACE: &str = "internal/replace";
 pub(crate) const INTERNAL_DISPATCH: &str = "internal/dispatch";
 
 fn snapshot(core: &Arc<Core>, name: &str) -> Vec<Listener> {
@@ -321,6 +322,11 @@ fn root_ctx(core: &Arc<Core>) -> Context {
 pub(crate) fn emit_plugin(core: &Arc<Core>, fiber: &Fiber) {
     let ctx = root_ctx(core);
     emit(core, &ctx, INTERNAL_PLUGIN, &json!([fiber.summary()]));
+}
+
+pub(crate) fn emit_replace(core: &Arc<Core>, fiber: &Fiber) {
+    let ctx = root_ctx(core);
+    emit(core, &ctx, INTERNAL_REPLACE, &json!([fiber.summary()]));
 }
 
 pub(crate) fn emit_status(core: &Arc<Core>, fiber: &Fiber, old: crate::fiber::FiberState) {

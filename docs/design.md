@@ -275,9 +275,10 @@ Value 优先的动态载体、无锁重入（§2.2，FFI 回调内再 install/pr
 4. 配置校验（Standard Schema 等价物）与 intercept——isolate 已落地
    （§5.3），依赖环诊断已落地（§7）；intercept 上游已收敛（PR #90 +
    #206），设计可启动。
-5. 原位插件替换（对齐上游 `registry.replace()`，#266）：fiber 保身份、
-   换 runtime + inject、重跑插件体；native 侧先行，FFI 侧对应
-   `PluginLibrary` 级替换（keep-mapped 下旧库留驻、新库接管 fibers）。
+5. 原位插件替换（对齐上游 `registry.replace()`，#266）：✅ native 侧
+   已落地（`Context::replace_plugin` + `internal/replace`，见 §7.1）；
+   FFI 侧对应 `PluginLibrary` 级替换（keep-mapped 下旧库留驻、新库接管
+   fibers）待做。
 6. 插件仓库索引（版本解析、依赖声明、签名校验，叠加在 `fetch` 之上）。
 7. `cordis-macros`（`#[plugin]`/`#[inject]` 派生宏、Service 模式宏）。
 8. §4.1 契约的机械化：插件 lint profile（ast-grep/clippy，宿主
@@ -312,7 +313,12 @@ cordis TS（v4）自上次快照（2026-09-06，rc.9）推进至 rc.12，76 个�
 - **#111 HMR 三阶段排空（范式背书）**：上游 HMR 采用「落幕 → 排空 →
   调和」的 per-fiber drain——与 §4.1 I1 的卸载协议同构。模块图与缓存
   失效（#269/#298）为 require 机制专属，cdylib 结构性不适用。
-- **#266 `registry.replace()`（跟进中）**：原位插件替换，见路线图 §6.5。
+- **#266 `registry.replace()`（native 侧已落地）**：原位插件替换——fiber
+  保身份（id/parent/config）、换 plugin+inject+provides、重跑体；依赖方
+  经常规 provide/withdraw 级联感知服务变更，Failed fiber 可被替换恢复，
+  新增 `internal/replace` 事件（`Context::replace_plugin`）。FFI 侧对应
+  `PluginLibrary` 级替换（keep-mapped 下旧库留驻、新库接管 fibers）
+  仍在路线图（§6.5）。
 - **#109/#133/#189 等并发修复**：同步核中同类窗口结构性不存在或已有
   对应机制（§5.3），逐一核对过，无需改动。
 

@@ -34,7 +34,7 @@ pub(crate) fn dependency_cycles(core: &Arc<Core>) -> Vec<Vec<String>> {
     };
 
     // Service name → fibers claiming it in `Plugin::provides`.
-    let mut claims: HashMap<&str, Vec<usize>> = HashMap::new();
+    let mut claims: HashMap<String, Vec<usize>> = HashMap::new();
     for (i, fiber) in fibers.iter().enumerate() {
         for name in fiber.declared_provides() {
             claims.entry(name).or_default().push(i);
@@ -48,9 +48,9 @@ pub(crate) fn dependency_cycles(core: &Arc<Core>) -> Vec<Vec<String>> {
             if !required {
                 continue;
             }
-            let label = fiber.ctx().isolate_label(name);
+            let label = fiber.ctx().isolate_label(&name);
             let satisfied = core
-                .store_impl(name, &label)
+                .store_impl(&name, &label)
                 .and_then(|impl_| impl_.owner.upgrade())
                 .map(|owner| owner.state() == FiberState::Active)
                 .unwrap_or(false);

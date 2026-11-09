@@ -10,7 +10,7 @@
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 
 use serde_json::{Value, json};
 
@@ -113,6 +113,15 @@ pub(crate) struct FiberInner {
     /// declaration order, or `None` when a required dep is missing.
     pub epoch: Option<Vec<u64>>,
     pub error: Option<PluginError>,
+    /// The plugin this fiber runs. Held under the inner lock so
+    /// `replace_plugin` can swap it against concurrent `reload` reads.
+    pub plugin: Option<Arc<dyn Plugin>>,
+    /// Declared dependencies, cached from the plugin (re-cached by
+    /// `replace_plugin`).
+    pub inject: Inject,
+    /// Declared provides (`Plugin::provides`), used by dependency-cycle
+    /// diagnostics (re-cached by `replace_plugin`).
+    pub provides: Vec<String>,
     /// Checked dependency impls, keyed by name (labels are fixed per
     /// fiber, so the name suffices within one fiber).
     pub dep_store: HashMap<String, Arc<ServiceImpl>>,
@@ -136,8 +145,7 @@ pub(crate) struct Fiber {
     pub name: String,
     #[allow(dead_code)] // parent link used by future scope introspection
     pub parent: Option<Weak<Fiber>>,
-    pub plugin: Option<Arc<dyn Plugin>>,
-    pub runtime: OnceLock<Arc<crate::registry::Runtime>>,
+    pub runtime: RwLock<Option<Arc<crate::registry::Runtime>>>,
     pub self_weak: OnceLock<Weak<Fiber>>,
     pub ctx: OnceLock<Context>,
     pub inner: Mutex<FiberInner>,
@@ -145,12 +153,6 @@ pub(crate) struct Fiber {
     /// live under one lock so a racer can never push an op after the
     /// holder released the flag without it being drained (lost wakeup).
     schedule: Mutex<ScheduleState>,
-    /// Declared dependencies, cached at install (the plugin trait is
-    /// queried exactly once).
-    inject: Inject,
-    /// Declared provides (`Plugin::provides`), cached at install; used
-    /// by dependency-cycle diagnostics.
-    provides: Vec<String>,
     /// The isolation group map this fiber was installed under.
     #[allow(dead_code)] // read via contexts; kept for scope introspection
     pub(crate) isolate: Arc<crate::context::IsolateMap>,
@@ -203,7 +205,13 @@ pub(crate) enum Op {
     },
 }
 
-fn fresh_inner(state: FiberState, config: Value) -> FiberInner {
+fn fresh_inner(
+    state: FiberState,
+    config: Value,
+    plugin: Option<Arc<dyn Plugin>>,
+    inject: Inject,
+    provides: Vec<String>,
+) -> FiberInner {
     FiberInner {
         state,
         config,
@@ -213,6 +221,9 @@ fn fresh_inner(state: FiberState, config: Value) -> FiberInner {
             None
         },
         error: None,
+        plugin,
+        inject,
+        provides,
         dep_store: HashMap::new(),
         batches: Vec::new(),
         provided: Vec::new(),
@@ -227,14 +238,17 @@ impl Fiber {
             id: 0,
             name: "root".into(),
             parent: None,
-            plugin: None,
-            runtime: OnceLock::new(),
+            runtime: RwLock::new(None),
             self_weak: OnceLock::from(weak.clone()),
             ctx: OnceLock::new(),
-            inner: Mutex::new(fresh_inner(FiberState::Active, Value::Null)),
+            inner: Mutex::new(fresh_inner(
+                FiberState::Active,
+                Value::Null,
+                None,
+                Inject::none(),
+                Vec::new(),
+            )),
             schedule: Mutex::new(ScheduleState::default()),
-            inject: Inject::none(),
-            provides: Vec::new(),
             isolate: Arc::new(crate::context::IsolateMap::default()),
         })
     }
@@ -253,14 +267,17 @@ impl Fiber {
             id: core.next_fiber_id(),
             name,
             parent: Some(parent),
-            plugin: Some(plugin),
-            runtime: OnceLock::new(),
+            runtime: RwLock::new(None),
             self_weak: OnceLock::from(weak.clone()),
             ctx: OnceLock::new(),
-            inner: Mutex::new(fresh_inner(FiberState::Pending, config)),
+            inner: Mutex::new(fresh_inner(
+                FiberState::Pending,
+                config,
+                Some(plugin),
+                inject,
+                provides,
+            )),
             schedule: Mutex::new(ScheduleState::default()),
-            inject,
-            provides,
             isolate,
         })
     }
@@ -288,7 +305,7 @@ impl Fiber {
     }
 
     pub(crate) fn runtime(&self) -> Option<Arc<crate::registry::Runtime>> {
-        self.runtime.get().cloned()
+        self.runtime.read().unwrap().clone()
     }
 
     pub(crate) fn state(&self) -> FiberState {
@@ -347,15 +364,16 @@ impl Fiber {
     }
 
     /// All declared inject names (required and optional), in order.
-    /// Cached at install time; `Plugin::inject` is never re-queried.
-    pub(crate) fn inject_names(&self) -> &[(String, bool)] {
-        &self.inject.entries
+    /// Cached at install time and re-cached by `replace_plugin`;
+    /// `Plugin::inject` is never re-queried outside those two points.
+    pub(crate) fn inject_names(&self) -> Vec<(String, bool)> {
+        self.inner.lock().unwrap().inject.entries.clone()
     }
 
-    /// Service names declared via `Plugin::provides`, in order. Cached
-    /// at install time; read by dependency-cycle diagnostics.
-    pub(crate) fn declared_provides(&self) -> &[String] {
-        &self.provides
+    /// Service names declared via `Plugin::provides`, in order. Read by
+    /// dependency-cycle diagnostics.
+    pub(crate) fn declared_provides(&self) -> Vec<String> {
+        self.inner.lock().unwrap().provides.clone()
     }
 
     /// Re-read the given services (within this fiber's isolation group)
@@ -393,7 +411,11 @@ impl Fiber {
         if inner.disposed || inner.error.is_some() {
             return Vec::new();
         }
-        let required: Vec<String> = self.inject.required_names().map(str::to_owned).collect();
+        let required: Vec<String> = inner
+            .inject
+            .required_names()
+            .map(str::to_owned)
+            .collect();
         let new_epoch = if required.iter().all(|n| inner.dep_store.contains_key(n)) {
             Some(
                 required
@@ -479,7 +501,7 @@ impl Fiber {
                 return;
             }
             inner.provided.clear();
-            (self.plugin.clone(), inner.config.clone())
+            (inner.plugin.clone(), inner.config.clone())
         };
         let Some(plugin) = plugin else { return };
         lifecycle_trace::trace("reload-enter", self);
@@ -601,6 +623,35 @@ impl Fiber {
         let ops = self.refresh();
         drive_ops(ops);
         self.check_failed()
+    }
+
+    /// Swap the plugin in place (upstream `registry.replace` /
+    /// `fiber._replace`): the fiber keeps its identity — id, parent,
+    /// config — and the new body re-runs through the normal
+    /// unload/reload cascade, so dependents observe the service change.
+    /// A previous failure is cleared, letting `replace` recover a
+    /// `Failed` fiber. The runtime registration must already point at
+    /// the new plugin's runtime (`registry::move_fiber`).
+    pub(crate) fn replace_plugin(
+        self: &Arc<Fiber>,
+        core: &Arc<Core>,
+        new: Arc<dyn Plugin>,
+    ) -> Result<(), CordisError> {
+        {
+            let mut inner = self.inner.lock().unwrap();
+            if inner.disposed {
+                return Err(CordisError::InactiveContext {
+                    action: "replace a disposed fiber",
+                    fiber: Some(self.name.clone()),
+                });
+            }
+            inner.plugin = Some(new.clone());
+            inner.inject = new.inject();
+            inner.provides = new.provides();
+            inner.error = None;
+        }
+        events::emit_replace(core, self);
+        self.restart(core)
     }
 
     pub(crate) fn check_failed(&self) -> Result<(), CordisError> {

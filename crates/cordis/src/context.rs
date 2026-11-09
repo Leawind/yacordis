@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use serde_json::Value;
 
 use crate::effect::{EffectHandle, attach_effect};
-use crate::error::{CordisError, PluginResult};
+use crate::error::{CordisError, PluginError, PluginResult};
 use crate::events;
 use crate::fiber::{Fiber, FiberState, ServiceImpl, disposal_disposer};
 use crate::logger::{Logger, LoggerHandle, StderrLogger};
@@ -283,7 +283,7 @@ impl Context {
             config,
             name,
         );
-        let _ = fiber.runtime.set(runtime.clone());
+        *fiber.runtime.write().unwrap() = Some(runtime.clone());
         let _ = fiber
             .ctx
             .set(Context::for_fiber(&self.core, &fiber, self.isolate.clone()));
@@ -310,6 +310,50 @@ impl Context {
         F: Fn(&Context) -> PluginResult + Send + Sync + 'static,
     {
         self.plugin_dyn(Arc::new(InjectClosure { inject: deps, f }), Value::Null)
+    }
+
+    /// Replace every fiber installed from `old` with `new`, in place
+    /// (v4 `registry.replace`). Fibers keep their identity — id, parent,
+    /// config — and re-run the new body through the normal unload/reload
+    /// cascade, so dependents observe the service change. A failed fiber
+    /// recovers. After the call, `old` is no longer a registered plugin
+    /// identity: installing it again starts a fresh runtime.
+    ///
+    /// Returns handles to the affected fibers. Body failures land on the
+    /// fiber ([`FiberState::Failed`]); the first such error is returned.
+    pub fn replace_plugin(
+        &self,
+        old: Arc<dyn Plugin>,
+        new: Arc<dyn Plugin>,
+    ) -> Result<Vec<FiberHandle>, CordisError> {
+        let fibers = {
+            let registry = self.core.registry.lock().unwrap();
+            registry.fibers_of(plugin_key(&old))
+        }
+        .ok_or_else(|| {
+            CordisError::PluginError(PluginError(
+                "replace_plugin: plugin is not installed".into(),
+            ))
+        })?;
+        let new_key = plugin_key(&new);
+        let new_name = new.name().unwrap_or("anonymous").to_owned();
+
+        let mut handles = Vec::new();
+        let mut first_error = None;
+        for fiber in fibers {
+            crate::registry::move_fiber(&self.core, &fiber, new_key, new_name.clone(), &new);
+            let result = fiber.replace_plugin(&self.core, new.clone());
+            handles.push(FiberHandle {
+                fiber: Arc::downgrade(&fiber),
+            });
+            if result.is_err() {
+                first_error.get_or_insert(result.unwrap_err());
+            }
+        }
+        match first_error {
+            Some(err) => Err(err),
+            None => Ok(handles),
+        }
     }
 
     // -----------------------------------------------------------------

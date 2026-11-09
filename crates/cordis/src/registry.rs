@@ -60,6 +60,13 @@ impl Registry {
         out
     }
 
+    /// Snapshot of the fibers installed from one plugin identity.
+    pub fn fibers_of(&self, key: PluginKey) -> Option<Vec<Arc<Fiber>>> {
+        self.map
+            .get(&key)
+            .map(|runtime| runtime.fibers.lock().unwrap().clone())
+    }
+
     #[allow(dead_code)] // used by tests
     pub fn runtime_count(&self) -> usize {
         self.map.len()
@@ -117,4 +124,39 @@ pub(crate) fn remove_fiber(core: &Arc<Core>, fiber: &Arc<Fiber>) {
     if runtime.fibers.lock().unwrap().is_empty() {
         registry.remove(runtime.key);
     }
+}
+
+/// Move a fiber to the runtime of its (new) plugin identity
+/// (`registry.replace` bookkeeping). The old runtime entry is dropped
+/// when the last fiber leaves it. No-op when the identity is unchanged.
+pub(crate) fn move_fiber(
+    core: &Arc<Core>,
+    fiber: &Arc<Fiber>,
+    new_key: PluginKey,
+    new_name: String,
+    new_plugin: &Arc<dyn Plugin>,
+) {
+    let new_runtime = {
+        let mut registry = core.registry.lock().unwrap();
+        registry.entry(new_key, new_name, new_plugin)
+    };
+    if let Some(old) = fiber.runtime() {
+        if old.key != new_runtime.key {
+            let now_empty = {
+                let mut fibers = old.fibers.lock().unwrap();
+                fibers.retain(|f| !Arc::ptr_eq(f, fiber));
+                fibers.is_empty()
+            };
+            if now_empty {
+                let mut registry = core.registry.lock().unwrap();
+                // Re-check under the registry lock: a concurrent install
+                // may have added a fiber to this runtime in the meantime.
+                if old.fibers.lock().unwrap().is_empty() {
+                    registry.remove(old.key);
+                }
+            }
+        }
+    }
+    *fiber.runtime.write().unwrap() = Some(new_runtime.clone());
+    new_runtime.fibers.lock().unwrap().push(fiber.clone());
 }
