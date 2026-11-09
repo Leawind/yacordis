@@ -1,11 +1,11 @@
 //! Timer service tests: fire-once, intervals, scope-release cancellation.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use cordis::prelude::*;
-use cordis_timer::{SleepOutcome, TimerContextExt, TimerPlugin};
+use cordis_timer::{CancelHandle, SleepOutcome, TimerContextExt, TimerPlugin};
 use serde_json::{Value, json};
 
 fn install_timer() -> (Context, cordis::FiberHandle) {
@@ -114,25 +114,31 @@ fn interval_fires_repeatedly_until_cancelled() {
         .plugin(
             move |ctx: &Context, _: &Value| -> PluginResult {
                 let tx = tx.clone();
-                let counter = Arc::new(std::sync::atomic::AtomicU32::new(0));
-                let counter_for_callback = Arc::clone(&counter);
+                let counter_for_callback = Arc::new(std::sync::atomic::AtomicU32::new(0));
+                // Cancel on the third tick, from inside the callback. A
+                // deadline-based check (setTimeout + counter >= 3) races
+                // the wheel's tick drift — Windows timer coalescing can
+                // push the third tick past the deadline, the condition
+                // never fires, and the interval runs forever. Cancelling
+                // inside the tick that reaches the count is
+                // deterministic: the wheel re-arms before running but
+                // re-checks `cancelled` before invoking, so the next
+                // tick is dropped.
+                let slot: Arc<Mutex<Option<CancelHandle>>> = Arc::default();
+                let slot_for_callback = Arc::clone(&slot);
                 let handle = ctx
                     .set_interval(Duration::from_millis(20), move || {
                         let n =
                             counter_for_callback.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                         tx.send(n).unwrap();
+                        if n + 1 >= 3 {
+                            if let Some(stopper) = slot_for_callback.lock().unwrap().as_ref() {
+                                stopper.cancel();
+                            }
+                        }
                     })
                     .map_err(PluginError::new)?;
-                // Cancel from inside the callback closure context: stop
-                // after three ticks by cancelling on the third send.
-                let counter2 = Arc::clone(&counter);
-                let stopper = handle.clone();
-                ctx.set_timeout(Duration::from_millis(75), move || {
-                    if counter2.load(std::sync::atomic::Ordering::SeqCst) >= 3 {
-                        stopper.cancel();
-                    }
-                })
-                .map_err(PluginError::new)?;
+                *slot.lock().unwrap() = Some(handle);
                 Ok(())
             },
             json!(null),
