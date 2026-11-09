@@ -236,19 +236,19 @@ fn apply_intercepts(
 /// groups are never disturbed.
 pub(crate) fn notify(core: &Arc<Core>, touched: &[(String, IsolateLabel)]) {
     let names: Vec<String> = touched.iter().map(|(n, _)| n.clone()).collect();
-    let targets: Vec<Arc<Fiber>> = {
-        let registry = core.registry.lock().unwrap();
-        registry
-            .all_fibers()
-            .into_iter()
-            .filter(|fiber| {
-                let inject = fiber.inject_names();
-                names
-                    .iter()
-                    .any(|name| inject.iter().any(|(n, _)| n == name))
-            })
-            .collect()
+    // Targeted lookup through the inject index (name → injecting
+    // fibers); a fiber injecting several touched names is deduped and
+    // checked once.
+    let mut targets: Vec<Arc<Fiber>> = {
+        let mut registry = core.registry.lock().unwrap();
+        let mut out: Vec<Arc<Fiber>> = Vec::new();
+        for name in &names {
+            out.extend(registry.injectors_of(name));
+        }
+        out
     };
+    targets.sort_by_key(|fiber| fiber.id);
+    targets.dedup_by(|a, b| a.id == b.id);
     let mut ops = Vec::new();
     for fiber in targets {
         if fiber.check_impls(core, &names) {

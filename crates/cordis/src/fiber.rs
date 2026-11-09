@@ -706,6 +706,13 @@ impl Fiber {
             inner.provides = new.provides();
             inner.error = None;
         }
+        // The declared inject may have changed: re-index for targeted
+        // notify.
+        {
+            let mut registry = core.registry.lock().unwrap();
+            registry.unregister_fiber(self);
+            registry.register_injects(self);
+        }
         events::emit_replace(core, self);
         self.restart(core)
     }

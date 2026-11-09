@@ -2,7 +2,7 @@
 //! (cordis `RegistryService`).
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use crate::context::Core;
 use crate::fiber::Fiber;
@@ -31,6 +31,10 @@ pub(crate) struct Runtime {
 #[derive(Default)]
 pub(crate) struct Registry {
     map: HashMap<PluginKey, Arc<Runtime>>,
+    /// name → fibers injecting it (required or optional). Notify walks
+    /// this index instead of scanning every fiber; entries are weak and
+    /// pruned on sight, disposal unregisters explicitly.
+    inject_index: HashMap<String, Vec<Weak<Fiber>>>,
 }
 
 impl Registry {
@@ -50,6 +54,47 @@ impl Registry {
                 })
             })
             .clone()
+    }
+
+    /// Index a fiber under every name it injects. Called at install and
+    /// whenever `replace_plugin` swaps the declared inject.
+    pub fn register_injects(&mut self, fiber: &Arc<Fiber>) {
+        for (name, _) in fiber.inject_names() {
+            let list = self.inject_index.entry(name).or_default();
+            if !list
+                .iter()
+                .any(|weak| weak.upgrade().as_ref().map(|f| f.id) == Some(fiber.id))
+            {
+                list.push(Arc::downgrade(fiber));
+            }
+        }
+    }
+
+    /// Drop a fiber from the inject index (dispose, or inject swap).
+    pub fn unregister_fiber(&mut self, fiber: &Arc<Fiber>) {
+        for (name, _) in fiber.inject_names() {
+            if let Some(list) = self.inject_index.get_mut(name.as_str()) {
+                list.retain(|weak| {
+                    weak.upgrade().as_ref().map(|f| f.id) != Some(fiber.id)
+                });
+                if list.is_empty() {
+                    self.inject_index.remove(name.as_str());
+                }
+            }
+        }
+    }
+
+    /// Fibers injecting `name`, with stale weak entries pruned.
+    pub fn injectors_of(&mut self, name: &str) -> Vec<Arc<Fiber>> {
+        let Some(list) = self.inject_index.get_mut(name) else {
+            return Vec::new();
+        };
+        list.retain(|weak| weak.upgrade().is_some());
+        if list.is_empty() {
+            self.inject_index.remove(name);
+            return Vec::new();
+        }
+        list.iter().filter_map(|weak| weak.upgrade()).collect()
     }
 
     pub fn all_fibers(&self) -> Vec<Arc<Fiber>> {
@@ -104,8 +149,8 @@ impl Registry {
     }
 }
 
-/// Remove a disposed fiber from its runtime; drop the runtime entry when
-/// the last fiber goes away.
+/// Remove a disposed fiber from its runtime and the inject index; drop
+/// the runtime entry when the last fiber goes away.
 pub(crate) fn remove_fiber(core: &Arc<Core>, fiber: &Arc<Fiber>) {
     let runtime = match fiber.runtime() {
         Some(runtime) => runtime,
@@ -115,10 +160,13 @@ pub(crate) fn remove_fiber(core: &Arc<Core>, fiber: &Arc<Fiber>) {
         let mut fibers = runtime.fibers.lock().unwrap();
         fibers.retain(|f| !Arc::ptr_eq(f, fiber));
         if !fibers.is_empty() {
+            let mut registry = core.registry.lock().unwrap();
+            registry.unregister_fiber(fiber);
             return;
         }
     }
     let mut registry = core.registry.lock().unwrap();
+    registry.unregister_fiber(fiber);
     // Re-check under the registry lock: a concurrent install may have
     // added a fiber to this runtime in the meantime.
     if runtime.fibers.lock().unwrap().is_empty() {

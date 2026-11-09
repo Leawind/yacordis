@@ -291,6 +291,12 @@ impl Context {
             .ctx
             .set(Context::for_fiber(&self.core, &fiber, self.isolate.clone()));
         runtime.fibers.lock().unwrap().push(fiber.clone());
+        // Index the declared injects before the body runs: notifies
+        // fired during the body must find this fiber.
+        {
+            let mut registry = self.core.registry.lock().unwrap();
+            registry.register_injects(&fiber);
+        }
 
         // Register disposal with the parent fiber: when the parent
         // unloads, this fiber is torn down with it (cascade). Claimed by
