@@ -147,7 +147,8 @@ v4 的六态中 `LOADING`/`UNLOADING` 在同步世界里是即时完成的中间
 一加载管线。
 
 宿主与插件之间**不做 Rust 类型直通**（预编译产物无法保证与宿主同
-rustc/同依赖版本），边界为 C ABI（`cordis-plugin-api`，`ABI_VERSION = 1`）：
+rustc/同依赖版本），边界为 C ABI（`cordis-plugin-api`，`ABI_VERSION = 2`；
+v2 增加 `run_blocking`/`work_cancelled`/`work_cancel`）：
 
 - **传输介质**：JSON 字节（`RawBuffer`，配置/事件/服务值/错误消息）、
   u64 句柄（宿主侧句柄表持有的 Context/Fiber/Effect）、
@@ -162,7 +163,11 @@ rustc/同依赖版本），边界为 C ABI（`cordis-plugin-api`，`ABI_VERSION 
   `cordis_plugin_apply()`（apply 回调）、`cordis_plugin_free_buffer()`；
   由 `register_plugin!` 宏生成（edition 2024 的 unsafe attribute 语法）。
 - **宿主 vtable**（单个静态实例）：effect/on/once/dispose_handle/
-  provide/set/get/has/emit/bail/plugin/fiber_dispose/log/free_buffer。
+  provide/set/get/has/emit/bail/plugin/fiber_dispose/log/free_buffer/
+  run_blocking/work_cancelled/work_cancel。工作回调的 `ctx` 参数承载
+  取消 token 句柄（经 `work_cancelled` 轮询），非 context 句柄；
+  完成回调以 JSON 信封
+  （`{"tag": "done|cancelled|failed|panicked", ...}`）交付结果。
   蹦床 `catch_unwind` 保证插件 panic → fiber `Failed` 而非 abort。
 - **回调状态机**：一次性回调（effect setup/disposer）被二次调用返回
   `CODE_REUSED`；状态盒由 `drop_fn` 释放，与调用解耦。
@@ -295,9 +300,10 @@ Value 优先的动态载体、无锁重入（§2.2，FFI 回调内再 install/pr
 
 1. ~~M2：`cordis-plugin-api` + `cordis-loader`~~（✅ 见 §4）。
 2. ~~异步生命周期~~ → 重定义为**框架中介并发**并已落地（§2.6：
-   `run_blocking` / `spawn_future` + 排空先于回滚）。async apply/dispose
+   `run_blocking` / `spawn_future` + 排空先于回滚；FFI 侧经 ABI v2
+   暴露 `run_blocking`，ABI v1 插件不再兼容）。async apply/dispose
    为有意不做（§3）；`parallel`/`serial` 分发待 async 监听器需求；
-   FFI 侧暴露这两个 API 待做。
+   FFI 侧 `spawn_future` 待设计（future 构造跨界是独立问题）。
 3. ~~`cordis-timer` / `cordis-logger`~~（✅ M3：同步线程定时轮 + 分级
    日志服务；`sleep` 以 effect 挂靠 fiber，卸载即唤醒，详见各自 crate
    文档）。

@@ -6,8 +6,9 @@
 use std::os::raw::c_void;
 
 /// Version of the ABI implemented by this crate. The host refuses to
-/// load plugins whose exported version differs.
-pub const ABI_VERSION: u32 = 1;
+/// load plugins whose exported version differs. v2 added the
+/// `run_blocking`/`work_cancelled`/`work_cancel` host functions.
+pub const ABI_VERSION: u32 = 2;
 
 /// A byte buffer crossing the boundary.
 ///
@@ -141,6 +142,19 @@ pub struct HostVTable {
     /// Dispose a fiber previously returned by `plugin` (0 = disposed now,
     /// 1 = already disposed, negative = error).
     pub fiber_dispose: unsafe extern "C" fn(handle: u64) -> i32,
+    /// Run a work unit on a framework thread. For the `work` callback,
+    /// the `ctx` argument carries the cancellation-token handle (poll it
+    /// via `work_cancelled`), not a context handle. Returns the work
+    /// handle id (0 on failure).
+    pub run_blocking:
+        unsafe extern "C" fn(ctx: u64, label: RawBuffer, work: Callback, on_done: Callback) -> u64,
+    /// Whether a work cancellation token (the handle passed to the work
+    /// callback as `ctx`) has been cancelled: 1 = cancelled, 0 = not,
+    /// negative = unknown token.
+    pub work_cancelled: unsafe extern "C" fn(token: u64) -> i32,
+    /// Request cancellation of a work unit returned by `run_blocking`
+    /// (0 = cancelled, negative = unknown handle).
+    pub work_cancel: unsafe extern "C" fn(handle: u64) -> i32,
 }
 
 /// Log levels for [`HostVTable::log`], mirroring `cordis::LogLevel`.

@@ -80,7 +80,7 @@ pub use abi::{
 };
 pub use buffer::{alloc_buffer, buffer_from_vec, buffer_into_vec, buffer_to_string, free_buffer};
 pub use callback::Disposable;
-pub use context::{Context, EffectHandle, ListenerHandle, LogLevel};
+pub use context::{Context, EffectHandle, ListenerHandle, LogLevel, WorkOutcome, WorkToken};
 pub use plugin::{Inject, Plugin, PluginError, PluginResult};
 
 /// Generate the exported symbols the loader expects.
@@ -128,7 +128,7 @@ macro_rules! register_plugin {
 /// Ergonomic imports for plugin authors.
 pub mod prelude {
     pub use crate::callback::Disposable;
-    pub use crate::context::{Context, EffectHandle, ListenerHandle, LogLevel};
+    pub use crate::context::{Context, EffectHandle, ListenerHandle, LogLevel, WorkOutcome, WorkToken};
     pub use crate::plugin::{Inject, Plugin, PluginError, PluginResult};
     pub use crate::register_plugin;
     pub use serde_json::{Value, json};

@@ -174,6 +174,98 @@ impl Context {
         let message_buf = Self::name_buf(message);
         unsafe { ((*self.env).log)(level as i32, target, message_buf) };
     }
+
+    /// Run blocking work on a framework thread (§4.1 I1: work is
+    /// framework plumbing). The unit is an effect of this context's
+    /// fiber: unload cancels and joins it before rolling back, so
+    /// `work` must poll the token for timely unloads. `on_done` is
+    /// invoked on the worker thread with the outcome; completion is
+    /// dropped when the fiber is already gone.
+    pub fn run_blocking<W, D>(&self, label: &str, work: W, on_done: D) -> Result<u64, String>
+    where
+        W: Fn(&WorkToken) -> Result<Value, String> + Send + Sync + 'static,
+        D: Fn(&Context, WorkOutcome) + Send + Sync + 'static,
+    {
+        // SAFETY: env is the process-static host vtable handed to every
+        // plugin callback.
+        let env: &'static HostVTable = unsafe { &*self.env };
+        let label_buf = Self::name_buf(label);
+        let work_cb = Callback::work_fn(move |token_raw, env| {
+            work(&WorkToken {
+                raw: token_raw,
+                env,
+            })
+        });
+        let on_done_cb = Callback::listener(move |ctx, args| {
+            let outcome = match args.get("tag").and_then(Value::as_str) {
+                Some("done") => {
+                    WorkOutcome::Done(args.get("value").cloned().unwrap_or(Value::Null))
+                }
+                Some("failed") => WorkOutcome::Failed(
+                    args.get("message")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                ),
+                Some("panicked") => WorkOutcome::Panicked(
+                    args.get("message")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                ),
+                _ => WorkOutcome::Cancelled,
+            };
+            on_done(ctx, outcome);
+            None
+        });
+        let handle = unsafe { (env.run_blocking)(self.handle, label_buf, work_cb, on_done_cb) };
+        if handle == 0 {
+            Err("cordis: run_blocking failed".into())
+        } else {
+            Ok(handle)
+        }
+    }
+
+    /// Request cancellation of a work unit returned by
+    /// [`Context::run_blocking`].
+    pub fn cancel_work(&self, handle: u64) -> Result<(), String> {
+        // SAFETY: env is a valid host vtable.
+        let code = unsafe { ((*self.env).work_cancel)(handle) };
+        if code == 0 {
+            Ok(())
+        } else {
+            Err(format!("cordis: work_cancel failed (code {code})"))
+        }
+    }
+}
+
+/// Cancellation token for a blocking work unit: polled from the worker
+/// thread for timely unloads.
+pub struct WorkToken {
+    raw: u64,
+    env: &'static HostVTable,
+}
+
+impl WorkToken {
+    /// Whether unload or an explicit cancel requested this unit to stop.
+    pub fn is_cancelled(&self) -> bool {
+        // SAFETY: env is the process-static host vtable.
+        unsafe { (self.env.work_cancelled)(self.raw) == 1 }
+    }
+}
+
+/// Outcome of a blocking work unit, delivered to the completion
+/// callback.
+#[derive(Clone, Debug)]
+pub enum WorkOutcome {
+    /// The work returned a value.
+    Done(Value),
+    /// Cancelled before finishing.
+    Cancelled,
+    /// The work returned an error.
+    Failed(String),
+    /// The work panicked.
+    Panicked(String),
 }
 
 impl std::fmt::Debug for Context {

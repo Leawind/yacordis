@@ -5,12 +5,13 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-use cordis::{Context, EffectHandle, FiberHandle};
+use cordis::{Context, EffectHandle, FiberHandle, WorkHandle};
 
 pub(crate) enum HostObject {
     Context(Context),
     Fiber(FiberHandle),
     Effect(EffectHandle),
+    Work(WorkHandle),
 }
 
 pub(crate) struct HandleTable {
@@ -56,12 +57,13 @@ impl HandleTable {
         }
     }
 
-    /// Remove a handle, returning the owned effect/fiber handle when the
-    /// entry held one. Context handles are simply forgotten.
+    /// Remove a handle, returning the owned effect/fiber/work handle
+    /// when the entry held one. Context handles are simply forgotten.
     pub(crate) fn take_lifecycle(&self, id: u64) -> Option<LifecycleHandle> {
         match self.map.lock().unwrap().remove(&id)? {
             HostObject::Effect(e) => Some(LifecycleHandle::Effect(e)),
             HostObject::Fiber(f) => Some(LifecycleHandle::Fiber(f)),
+            HostObject::Work(w) => Some(LifecycleHandle::Work(w)),
             HostObject::Context(_) => None,
         }
     }
@@ -70,4 +72,5 @@ impl HandleTable {
 pub(crate) enum LifecycleHandle {
     Effect(EffectHandle),
     Fiber(FiberHandle),
+    Work(WorkHandle),
 }

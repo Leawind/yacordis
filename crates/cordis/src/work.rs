@@ -44,7 +44,9 @@ use crate::logger::LogLevel;
 
 /// Cooperative cancellation token handed to a blocking work unit. The
 /// unit must poll it for timely unloads; a unit that ignores it holds
-/// the unloading fiber until it returns.
+/// the unloading fiber until it returns. Cloneable so hosts can keep
+/// registry copies (the FFI bridge exposes one handle per clone).
+#[derive(Clone)]
 pub struct CancellationToken(Arc<AtomicBool>);
 
 impl CancellationToken {

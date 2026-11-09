@@ -146,3 +146,63 @@ fn pending_until_host_provides_the_dependency() {
     assert!(ctx.has("greeter"));
     handle.dispose();
 }
+
+/// The FFI `run_blocking` bridge: a binary plugin runs work on a
+/// framework thread, polls the cancellation token, and its completion
+/// callback (a framework-initiated call on the worker thread) appends
+/// to the log. Unload drains the in-flight unit before rollback.
+#[test]
+fn binary_plugin_blocking_work() {
+    let plugin = Loader::build_and_load(fixture_dir(), &build_options()).expect("build and load");
+    let ctx = Context::new();
+    ctx.set_logger(Arc::new(cordis::DiscardLogger));
+    ctx.provide("database", Arc::new(json!({ "uri": "pg://host/test" })))
+        .expect("provide");
+
+    let target = build_options().target_dir.unwrap();
+
+    // Completion path: the work runs to its delay and delivers Done.
+    let log_path = target.join("demo-work.log");
+    let _ = std::fs::remove_file(&log_path);
+    let handle = plugin
+        .install(
+            &ctx,
+            json!({ "greeting": "hi", "log": log_path.to_str().unwrap(), "work_delay_ms": 120 }),
+        )
+        .expect("install");
+    assert!(handle.is_active());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+        if log.contains("work-done") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "work did not complete in time"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    handle.dispose();
+
+    // Drain path: a long-polling work must be cancelled and joined at
+    // dispose, not waited out.
+    let cancel_log = target.join("demo-work-cancel.log");
+    let _ = std::fs::remove_file(&cancel_log);
+    let handle2 = plugin
+        .install(
+            &ctx,
+            json!({ "greeting": "hi", "log": cancel_log.to_str().unwrap(), "work_delay_ms": 10_000 }),
+        )
+        .expect("install long work");
+    let start = std::time::Instant::now();
+    handle2.dispose();
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(2),
+        "dispose must join the cancelled unit promptly (elapsed {:?})",
+        start.elapsed()
+    );
+    let log = std::fs::read_to_string(&cancel_log).expect("cancel log");
+    assert!(log.contains("work-cancelled"), "{log}");
+    assert!(!log.contains("work-done"), "{log}");
+}

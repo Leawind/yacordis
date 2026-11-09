@@ -7,14 +7,16 @@
 //! parsing; output buffers we fill are freed by the plugin after
 //! reading.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use cordis_plugin_api::{ABI_VERSION, Callback, HostVTable, RawBuffer, log_level};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::adapter::{Invocation, SendCallback};
 use crate::handles::{HandleTable, HostObject};
-use cordis::{Context, EffectOutcome, LogLevel};
+use cordis::{CancellationToken, Context, EffectOutcome, LogLevel};
 
 pub(crate) fn handles() -> &'static HandleTable {
     HandleTable::global()
@@ -135,6 +137,11 @@ unsafe extern "C" fn v_dispose_handle(handle: u64) -> i32 {
         Some(crate::handles::LifecycleHandle::Fiber(fiber)) => {
             // false = already disposed, still a success for the caller.
             u8::from(!fiber.dispose()) as i32
+        }
+        Some(crate::handles::LifecycleHandle::Work(work)) => {
+            // Disposing a work handle cancels the unit.
+            work.cancel();
+            0
         }
         None => -2,
     }
@@ -276,6 +283,91 @@ unsafe extern "C" fn v_fiber_dispose(handle: u64) -> i32 {
             effect.dispose();
             0
         }
+        Some(crate::handles::LifecycleHandle::Work(work)) => {
+            work.cancel();
+            0
+        }
+        None => -2,
+    }
+}
+
+// The token registry hands each FFI work unit a pollable id: the plugin
+// side sees the token handle as its work callback's `ctx` argument.
+fn work_tokens() -> &'static Mutex<(AtomicU64, HashMap<u64, CancellationToken>)> {
+    static TOKENS: OnceLock<Mutex<(AtomicU64, HashMap<u64, CancellationToken>)>> = OnceLock::new();
+    TOKENS.get_or_init(|| Mutex::new((AtomicU64::new(1), HashMap::new())))
+}
+
+fn register_token(token: CancellationToken) -> u64 {
+    let mut tokens = work_tokens().lock().unwrap();
+    let id = tokens.0.fetch_add(1, Ordering::Relaxed);
+    tokens.1.insert(id, token);
+    id
+}
+
+fn take_token(id: u64) -> Option<CancellationToken> {
+    work_tokens().lock().unwrap().1.remove(&id)
+}
+
+unsafe extern "C" fn v_run_blocking(
+    ctx_handle: u64,
+    label: RawBuffer,
+    work: Callback,
+    on_done: Callback,
+) -> u64 {
+    let label = take_string(label);
+    let work = SendCallback::new(work);
+    let on_done = SendCallback::new(on_done);
+    let Some(ctx) = handles().get_context(ctx_handle) else {
+        return 0;
+    };
+    let result = ctx.run_blocking(
+        &label,
+        move |token| {
+            let token_id = register_token(token.clone());
+            // The work callback's `ctx` argument is the token handle.
+            let invocation = work.invoke(token_id, &Value::Null);
+            take_token(token_id);
+            match invocation {
+                Invocation::Ok(value) => Ok(value.unwrap_or(Value::Null)),
+                Invocation::Failed(message) => Err(cordis::PluginError::new(message)),
+                Invocation::Disposers(_) => Ok(Value::Null),
+            }
+        },
+        move |_, outcome| {
+            let envelope = match &outcome {
+                cordis::WorkOutcome::Done(value) => json!({ "tag": "done", "value": value }),
+                cordis::WorkOutcome::Cancelled => json!({ "tag": "cancelled" }),
+                cordis::WorkOutcome::Failed(message) => {
+                    json!({ "tag": "failed", "message": message.to_string() })
+                }
+                cordis::WorkOutcome::Panicked(message) => {
+                    json!({ "tag": "panicked", "message": message })
+                }
+            };
+            let _ = on_done.invoke(ctx_handle, &envelope);
+        },
+    );
+    match result {
+        Ok(handle) => handles().insert(HostObject::Work(handle)),
+        Err(_) => 0,
+    }
+}
+
+unsafe extern "C" fn v_work_cancelled(token: u64) -> i32 {
+    match work_tokens().lock().unwrap().1.get(&token) {
+        Some(t) => i32::from(t.is_cancelled()),
+        None => -1,
+    }
+}
+
+unsafe extern "C" fn v_work_cancel(handle: u64) -> i32 {
+    match handles().take_lifecycle(handle) {
+        Some(crate::handles::LifecycleHandle::Work(work)) => {
+            work.cancel();
+            0
+        }
+        Some(_) => -1,
         None => -2,
     }
 }
@@ -297,6 +389,9 @@ pub(crate) static HOST_VTABLE: HostVTable = HostVTable {
     bail: v_bail,
     plugin: v_plugin,
     fiber_dispose: v_fiber_dispose,
+    run_blocking: v_run_blocking,
+    work_cancelled: v_work_cancelled,
+    work_cancel: v_work_cancel,
 };
 
 // Context is referenced in doc comments and the adapter lives beside us.

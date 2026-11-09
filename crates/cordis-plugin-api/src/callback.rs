@@ -141,6 +141,19 @@ impl Callback {
     {
         erase(f, effect_setup_trampoline::<F>)
     }
+
+    /// Erase a blocking-work closure: invoked once on a framework worker
+    /// thread; the `ctx` argument it sees is the cancellation-token
+    /// handle (not a context) — poll it through
+    /// [`HostVTable::work_cancelled`](crate::HostVTable::work_cancelled).
+    /// A returned value becomes the work result; an error becomes the
+    /// failure message.
+    pub fn work_fn<F>(f: F) -> Callback
+    where
+        F: Fn(u64, &'static HostVTable) -> Result<Value, String> + Send + Sync + 'static,
+    {
+        erase(f, work_trampoline::<F>)
+    }
 }
 
 extern "C" fn disposer_trampoline<F>(
@@ -273,6 +286,40 @@ where
                 }
                 Err(err) => {
                     write_error_message(out_json, &err.to_string());
+                    3
+                }
+            }
+        })
+    };
+    release_args(args);
+    code
+}
+
+extern "C" fn work_trampoline<F>(
+    user_data: *mut c_void,
+    env: *const HostVTable,
+    ctx: u64,
+    args: RawBuffer,
+    out_json: *mut RawBuffer,
+    _out_callbacks: *mut RawCallbacks,
+) -> i32
+where
+    F: Fn(u64, &'static HostVTable) -> Result<Value, String> + Send + Sync + 'static,
+{
+    // SAFETY: the host passes the process-static vtable pointer.
+    let env_ref: &'static HostVTable = unsafe { &*env };
+    let code = unsafe {
+        with_state::<F>(user_data, |state| {
+            let Some(f) = state.f.as_ref() else {
+                return CODE_REUSED;
+            };
+            match f(ctx, env_ref) {
+                Ok(value) => {
+                    write_json(out_json, &value);
+                    1
+                }
+                Err(message) => {
+                    write_error_message(out_json, &message);
                     3
                 }
             }
