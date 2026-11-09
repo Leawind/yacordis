@@ -32,6 +32,7 @@ pub(crate) fn provide(
     value: Arc<dyn Any + Send + Sync>,
 ) -> Result<(), CordisError> {
     let label = ctx.isolate_label(&name);
+    check_service_value(core, &name, &label, &value)?;
     let impl_ = Arc::new(ServiceImpl {
         name: name.clone(),
         value: Mutex::new(value),
@@ -125,6 +126,7 @@ pub(crate) fn set(
             owner: impl_.owner_name.clone(),
         });
     }
+    check_service_value(core, name, &label, &value)?;
     *impl_.value.lock().unwrap() = value;
     Ok(())
 }
@@ -175,6 +177,83 @@ pub(crate) fn set_intercept(
     }));
     crate::effect::attach_effect(fiber, handle);
     Ok(())
+}
+
+/// Register a value schema for a JSON service (the `check` predicate,
+/// Rust-shaped): every subsequent provide/set of that service — in this
+/// fiber's isolation group — must satisfy the schema. The registration
+/// is an effect of the current fiber and dies with it.
+pub(crate) fn provide_schema(
+    core: &Arc<Core>,
+    ctx: &Context,
+    fiber: &Arc<Fiber>,
+    name: String,
+    schema: crate::schema::Schema,
+) -> Result<(), CordisError> {
+    let label = ctx.isolate_label(&name);
+    let key = ServiceKey {
+        name: name.clone(),
+        label: label.clone(),
+    };
+    let node_ptr = schema.node_ptr();
+    {
+        let mut schemas = core.service_schemas.lock().unwrap();
+        schemas.insert(key.clone(), schema);
+    }
+    let handle = crate::effect::EffectHandle::new(format!("ctx.provide_schema({name})"));
+    let core = core.clone();
+    handle.push(Box::new(move || {
+        let mut schemas = core.service_schemas.lock().unwrap();
+        // Remove only our own registration: a later re-registration by
+        // another fiber owns the slot now.
+        if schemas
+            .get(&key)
+            .map(|current| current.node_ptr() == node_ptr)
+            .unwrap_or(false)
+        {
+            schemas.remove(&key);
+        }
+    }));
+    crate::effect::attach_effect(fiber, handle);
+    Ok(())
+}
+
+/// Enforce a registered service value schema (JSON services only —
+/// typed services bypass, mirroring intercepts).
+fn check_service_value(
+    core: &Arc<Core>,
+    name: &str,
+    label: &IsolateLabel,
+    value: &Arc<dyn Any + Send + Sync>,
+) -> Result<(), CordisError> {
+    let schema = {
+        let key = ServiceKey {
+            name: name.to_owned(),
+            label: label.clone(),
+        };
+        core.service_schemas.lock().unwrap().get(&key).cloned()
+    };
+    let Some(schema) = schema else {
+        return Ok(());
+    };
+    let Ok(json_value) = value.clone().downcast::<Value>() else {
+        return Ok(());
+    };
+    let diagnostics = schema.validate(&json_value);
+    if diagnostics.is_empty() {
+        return Ok(());
+    }
+    Err(CordisError::PluginError(crate::error::PluginError(
+        format!(
+            "service `{name}` rejected: {}",
+            diagnostics
+                .iter()
+                .map(|d| d.to_string())
+                .collect::<Vec<_>>()
+                .join("; ")
+        )
+        .into(),
+    )))
 }
 
 /// Collect intercept values for `name` along the fiber chain, nearest

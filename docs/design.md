@@ -143,8 +143,18 @@ cordis-rust 的首期落地（`ctx.intercept(name, value)`，JSON 服务）：
 - 与上游的偏差：v4 的 Service 类携带 metadata 并自定义
   `mergeIntercept`；我们的 typed 服务是无元数据的裸值，故 typed
   通道不参与合并（JSON 通道承载全部拦截语义）。`resolveConfig`
-  的职责由 schema 默认值（§6.4）承担；`check` 谓词暂缺（服务实例
-  化校验，待需求）。
+  的职责由 schema 默认值（§6.4）承担；`check` 谓词已落地为
+  `ctx.provide_schema`（§2.8）。
+
+### 2.8 服务值校验（check 谓词的 Rust 形态）
+
+`ctx.provide_schema(name, schema)`：为某 JSON 服务（按
+`(name, isolate label)` 键控）登记一个值 schema——此后该服务的每次
+provide/set 都先过校验，违规即整次调用失败并保留原值。与上游
+`provide(name, service, check)` 的对应：check 从「服务类自述的实例
+校验」改为「声明式 schema 门控」，复用配置校验的 DSL，typed 服务
+旁路（与 intercept 同一取舍）。登记是 effect——随 fiber 卸载解除，
+所有权以 schema 节点指针判等（防重注册竞争下的误删）。
 
 ## 3. 与 TS 版的有意分歧（截至 M1）
 
@@ -344,8 +354,9 @@ Value 优先的动态载体、无锁重入（§2.2，FFI 回调内再 install/pr
    update 拒绝 → 保留旧配置，通过的配置以解析后形态持久化。FFI 插件
    暂在 body 内自行校验）。isolate 已落地（§5.3），依赖环诊断已落地
    （§7）；**服务 intercept 首期已落地**（§2.7：fiber 链分层覆盖、
-   nearest-wins 浅合并、JSON 服务，effect 登记随卸载回滚）；自定义
-   `mergeIntercept`（typed 服务元数据合并）与 `check` 谓词待需求。
+   nearest-wins 浅合并、JSON 服务，effect 登记随卸载回滚）；**`check`
+   谓词已落地**（§2.8：`ctx.provide_schema` 服务值门控）；typed 服务
+   自定义 `mergeIntercept` 待需求。
 5. 原位插件替换（对齐上游 `registry.replace()`，#266）：✅ native 侧
    已落地（`Context::replace_plugin` + `internal/replace`，见 §7.1）；
    FFI 侧对应 `PluginLibrary` 级替换（keep-mapped 下旧库留驻、新库接管

@@ -91,6 +91,10 @@ pub(crate) struct Core {
     pub(crate) logger: LoggerHandle,
     /// Cycle shapes already reported on the logger (dedup key).
     pub(crate) reported_cycles: Mutex<HashSet<String>>,
+    /// Service value schemas (the `check` predicate, Rust-shaped): for
+    /// each (name, label), the schema every provide/set of that JSON
+    /// service must satisfy. Registered as effects.
+    pub(crate) service_schemas: Mutex<HashMap<ServiceKey, crate::schema::Schema>>,
     /// Framework work substrate: id counter + lazy executor.
     pub(crate) work: crate::work::WorkRegistry,
 }
@@ -108,6 +112,7 @@ impl Core {
             store: Mutex::new(HashMap::new()),
             logger: LoggerHandle::new(Arc::new(StderrLogger)),
             reported_cycles: Mutex::new(HashSet::new()),
+            service_schemas: Mutex::new(HashMap::new()),
             work: crate::work::WorkRegistry::default(),
         });
         let _ = root.ctx.set(Context {
@@ -420,6 +425,20 @@ impl Context {
     ) -> Result<(), CordisError> {
         let fiber = self.active_fiber("set an intercept")?;
         crate::reflect::set_intercept(&fiber, name.into(), value.into())
+    }
+
+    /// Register a value schema for a JSON service (the `check`
+    /// predicate): every subsequent provide/set of that service — from
+    /// any fiber in this isolation group — must satisfy it, or the
+    /// call fails with the validation diagnostics. The registration is
+    /// an effect of the current fiber and dies with it.
+    pub fn provide_schema(
+        &self,
+        name: impl Into<String>,
+        schema: crate::schema::Schema,
+    ) -> Result<(), CordisError> {
+        let fiber = self.active_fiber("register a service schema")?;
+        crate::reflect::provide_schema(&self.core, self, &fiber, name.into(), schema)
     }
 
     /// Resolve a service by name within this context's isolation group.

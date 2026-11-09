@@ -134,6 +134,12 @@ impl Schema {
         }
     }
 
+    /// Identity of the underlying schema node, for ownership checks
+    /// when unregistrations race re-registrations.
+    pub(crate) fn node_ptr(&self) -> usize {
+        Arc::as_ptr(&self.node) as *const () as usize
+    }
+
     /// Minimum item count (arrays) or length (strings).
     #[must_use]
     pub fn min(mut self, bound: usize) -> Self {
