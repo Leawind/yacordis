@@ -11,9 +11,13 @@
 //! Listeners are string-keyed and receive a `serde_json::Value` payload;
 //! the [`Event`] trait adds a typed, compile-checked layer on top. All
 //! dispatches snapshot the hook list and invoke user code with no locks
-//! held, which is what keeps FFI plugin callbacks re-entrant.
+//! held, which is what keeps FFI plugin callbacks re-entrant. Removal is
+//! honored inside an active dispatch: each snapshot copy observes a
+//! shared liveness flag, so a listener removed mid-dispatch is skipped
+//! in the same cycle (cordis TS #242).
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::{Value, json};
 
@@ -32,6 +36,9 @@ pub type Middleware =
 
 pub(crate) struct Hook {
     pub id: u64,
+    /// Liveness guard shared with every snapshot copy of the listener;
+    /// flipped by [`remove_hook`] so active dispatches skip removals.
+    pub live: Arc<AtomicBool>,
     pub listener: Listener,
 }
 
@@ -185,10 +192,27 @@ fn register_hook(
     listener: Listener,
     prepend: bool,
 ) -> EffectHandle {
+    // Liveness guard: once removed, the listener returns `None` without
+    // running. For `emit` this skips it entirely; for `bail` this keeps
+    // the dispatch moving to the next listener — both match "honor
+    // listener removal in active dispatch snapshots" (upstream #242).
+    let live = Arc::new(AtomicBool::new(true));
+    let live_guard = live.clone();
+    let guarded: Listener = Arc::new(move |ctx, args| {
+        if live_guard.load(Ordering::Acquire) {
+            listener(ctx, args)
+        } else {
+            None
+        }
+    });
     {
         let mut hooks = core.hooks.lock().unwrap();
         let list = hooks.entry(name.clone()).or_default();
-        let hook = Hook { id, listener };
+        let hook = Hook {
+            id,
+            listener: guarded,
+            live,
+        };
         if prepend {
             list.insert(0, hook);
         } else {
@@ -211,6 +235,11 @@ pub(crate) fn remove_hook(core: &Arc<Core>, name: &str, id: u64) -> bool {
         return false;
     };
     let before = list.len();
+    // Flip liveness before dropping the entries: listeners already cloned
+    // into an active dispatch observe the removal and skip themselves.
+    for hook in list.iter_mut().filter(|hook| hook.id == id) {
+        hook.live.store(false, Ordering::Release);
+    }
     list.retain(|hook| hook.id != id);
     let removed = before != list.len();
     let now_empty = list.is_empty();
