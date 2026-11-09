@@ -157,6 +157,33 @@ Value 优先的动态载体、无锁重入（§2.2，FFI 回调内再 install/pr
 （typed downcast 仅 native 侧可用）；插件侧监听器不提供手动移除句柄
 （随 fiber 卸载自动清理）。
 
+### 4.1 卸载限制契约（插件规范不变量）
+
+「干净卸载」分三层：①**语义干净**（经框架注册的一切可证明回收）——
+由 effect 收集结构保证，无需插件作者配合；②**代码干净**（真正 unmap
+不 UB）——以 keep-mapped 策略规避（见上），放弃证明换取安全；③
+**进程干净**（长期运行无累积残留）——依赖插件作者遵守以下三条不变量：
+
+- **I1（单调度域）**：插件代码只在框架发起的调用中执行（vtable 调用，
+  或登记为 effect 的工作单元）。推论：卸载前框架可排空全部在途工作
+  （落幕 → 排空 → 回滚三阶段），回滚期间不存在并发插件代码。线程与
+  async 可以存在，但只能作为宿主管道（框架并发 API，或登记为 effect、
+  排空阶段关闭的内部 runtime），不得建立框架看不见的第二调度域。
+- **I2（资源所有权）**：插件获取的一切资源，要么经 `ctx` 注册（框架
+  持有，记入 handle 表），要么永不逃出插件体作用域。推论：dispose 时
+  handle 表为空 ⇒ 语义干净。宿主半边机械可查（dispose 审计：表空
+  断言、buffer 计数配平）；插件半边靠能力式 API + lint 封堵（裸
+  `thread::spawn`、未登记 runtime、静态 CRT、可变 `static`）。
+- **I3（无跨加载状态）**：插件不得持有跨加载存活的可变状态；行为是
+  (config, 服务视图, 收到的事件) 的纯函数。推论：重载 = 全新实例，
+  热更新语义正确。
+
+强制执行矩阵：I1 由 ABI 结构（入口仅 vtable）+ lint 保证；I2 宿主半边
+由 dispose 审计做运行时断言、插件半边由 lint profile 强制（
+`build_and_load` 路径宿主持有源码可机械执行；预编译二进制分发退化为
+信任发布者）；I3 由 lint；keep-mapped 兜底保证违规退化为泄漏而非 UB。
+子进程是 CPU 并行与故障隔离的合规逃生舱——进程死亡是唯一完美的卸载。
+
 ## 5. 设计评审记录（2026-09-06，里程碑 3 后）
 
 对已实现部分的一次全面自查：每个决策复核理由，缺陷当场修复，债务显式记录。
@@ -239,30 +266,55 @@ Value 优先的动态载体、无锁重入（§2.2，FFI 回调内再 install/pr
 
 1. ~~M2：`cordis-plugin-api` + `cordis-loader`~~（✅ 见 §4）。
 2. 异步生命周期：async apply/dispose、fiber inertia 互斥、
-   `parallel`/`serial` 分发模式。
+   `parallel`/`serial` 分发模式。设计以 §4.1 的「排空先于回滚」为纲；
+   上游语义输入：#268（async-generator effect 随 epoch 关闭）、
+   #136（parallel 模式上报）、fiber inertia 排空。
 3. ~~`cordis-timer` / `cordis-logger`~~（✅ M3：同步线程定时轮 + 分级
    日志服务；`sleep` 以 effect 挂靠 fiber，卸载即唤醒，详见各自 crate
-   文档）.
-4. 配置校验（Standard Schema 等价物）、intercept（isolate 已落地，
-   见 §5.3；依赖环诊断已落地，见 §7）。
-5. 插件仓库索引（版本解析、依赖声明、签名校验，叠加在 `fetch` 之上）。
-6. `cordis-macros`（`#[plugin]`/`#[inject]` 派生宏、Service 模式宏）。
+   文档）。
+4. 配置校验（Standard Schema 等价物）与 intercept——isolate 已落地
+   （§5.3），依赖环诊断已落地（§7）；intercept 上游已收敛（PR #90 +
+   #206），设计可启动。
+5. 原位插件替换（对齐上游 `registry.replace()`，#266）：fiber 保身份、
+   换 runtime + inject、重跑插件体；native 侧先行，FFI 侧对应
+   `PluginLibrary` 级替换（keep-mapped 下旧库留驻、新库接管 fibers）。
+6. 插件仓库索引（版本解析、依赖声明、签名校验，叠加在 `fetch` 之上）。
+7. `cordis-macros`（`#[plugin]`/`#[inject]` 派生宏、Service 模式宏）。
+8. §4.1 契约的机械化：插件 lint profile（ast-grep/clippy，宿主
+   `build_and_load` 路径强制执行）+ dispose 审计（handle 表空断言、
+   buffer 计数配平）。
 
-## 7. TS 上游对照与跟进（2026-09-06）
+## 7. TS 上游对照与跟进（2026-11-10，rc.9 → rc.12）
 
-cordis TS（v4）处于 rc 阶段（v4.0.0-rc.9），核心范式一年无破坏性变更，
-但其边界语义仍被 DeepSeek Harness 的实战持续打磨。本仓库的跟进策略：
-**不追功能，盯 cordiverse/cordis 的 issue 列表**——那里的问题就是这个
-范式在真实负载下暴露的裂缝预告片。逐项对照：
+cordis TS（v4）自上次快照（2026-09-06，rc.9）推进至 rc.12，76 个提交。
+跟进策略不变：**不追功能，盯 cordiverse/cordis 的 issue 列表**——那里的
+问题就是这个范式在真实负载下暴露的裂缝预告片。逐项对照：
 
 | 上游 issue | 主题 | cordis-rust 状态 |
 |---|---|---|
-| #34 | epoch ABA：async 加载期间 update 改配置，epoch 感知不到 | **结构性免疫**：同步核没有异步加载窗口；并发排队 op 另有 epoch 快照 + stale-guard（§5.3），测试锁定于 `tests/stale_ops.rs` |
-| #96 / #91 | 卸载中注册 effect/listener → 泄漏 | **已覆盖**：`unloading` 态注册一律 `InactiveContext`、effect 即时回滚，测试锁定于 `tests/unloading.rs` |
-| #110 | provider 先于 consumer 卸载（`Promise.all` 竞态） | **结构性免疫**：同步级联，consumer 在 provider 的 provide-disposer 内完成停用；一层与深链（A←B←C）均有顺序断言（`tests/lifecycle.rs`、`tests/cascade.rs`） |
-| #66 | 循环插件依赖无检测 | **已落地**：`Plugin::provides` 声明 + SCC 检测 + 日志/内省报告（`src/diagnose.rs`）；body-only provide 不可检测，与上游同为开放边界 |
-| #43 | waterfall 结构化取消语义 | **部分对齐**：全链 `Result` 化、panic 转 Err（§2.4）；完整的取消语义上游也未定论 |
-| #90 / #102 | intercept 重设计、Standard Schema 诊断化 | **路线图**（§6.4），等上游语义收敛后再动 |
+| #34 | epoch ABA：async 加载期间 update 改配置，epoch 感知不到 | **双双闭合**：上游以 fiber revision 计数实现 stale-guard（#189）；我们的 op epoch 快照 + stale-guard（§5.3）机制对等，测试锁定于 `tests/stale_ops.rs` |
+| #96 / #91 | 卸载中注册 effect/listener → 泄漏 | 上游仍 open；**已覆盖**：`unloading` 态注册一律 `InactiveContext`、effect 即时回滚，测试锁定于 `tests/unloading.rs` |
+| #110 | provider 先于 consumer 卸载（`Promise.all` 竞态） | **双双闭合**：上游按服务绑定跟踪 dependents（#196）；我们的同步级联（consumer 在 provider 的 provide-disposer 内完成停用）顺序契约一致，测试锁定于 `tests/lifecycle.rs`、`tests/cascade.rs` |
+| #66 | 循环插件依赖无检测 | 上游仍 open，**我们领先**：`Plugin::provides` 声明 + SCC 检测 + 日志/内省报告（`src/diagnose.rs`）；body-only provide 不可检测，与上游同为开放边界 |
+| #43 | waterfall 结构化取消语义 | 上游仍 open；**部分对齐**：全链 `Result` 化、panic 转 Err（§2.4）；完整的取消语义上游也未定论 |
+| #90 | intercept 重设计 | **上游已收敛**（PR #90 重写 resolveConfig；#206 定 metadata 合并次序），§6.4 设计启动前提满足 |
+| #102 | Standard Schema 诊断化 | 上游仍 open，继续观察 |
+
+### 7.1 rc.9 → rc.12 语义对齐清单
+
+- **#242（采纳对齐）**：dispatch 中实时尊重监听器移除——被移除的监听器
+  在同一轮 dispatch 中不再被调用。快照迭代语义已按此修正（`src/events.rs`），
+  回归测试锁定。
+- **#56（补回归测试）**：`internal/update` hooks 随 fiber 释放——我们经
+  effect 收集天然覆盖，测试补齐。
+- **#277（早已对齐）**：notify 按 `(name, isolate label)` 定向——
+  `reflect.rs::notify` 一直如此，无需改动。
+- **#111 HMR 三阶段排空（范式背书）**：上游 HMR 采用「落幕 → 排空 →
+  调和」的 per-fiber drain——与 §4.1 I1 的卸载协议同构。模块图与缓存
+  失效（#269/#298）为 require 机制专属，cdylib 结构性不适用。
+- **#266 `registry.replace()`（跟进中）**：原位插件替换，见路线图 §6.5。
+- **#109/#133/#189 等并发修复**：同步核中同类窗口结构性不存在或已有
+  对应机制（§5.3），逐一核对过，无需改动。
 
 两个可以写进定位的差异点（同步模型的红利，均非有意为之的性能取舍，
 而是模型选择带来的结构性消除）：其一，v4 的 #34/#110 类竞态根植于
