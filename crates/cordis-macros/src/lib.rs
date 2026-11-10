@@ -2,10 +2,12 @@
 //!
 //! ```
 //! # use cordis_macros::plugin;
+//! # use cordis::Schema;
 //! #[plugin(
 //!     name = "database",
 //!     inject(required = ["config"], optional = ["logger"]),
-//!     provides = ["db"]
+//!     provides = ["db"],
+//!     schema = Schema::object().req("uri", Schema::string()).build()
 //! )]
 //! fn database(ctx: &cordis::Context, config: &serde_json::Value) -> cordis::PluginResult {
 //!     ctx.provide("db", std::sync::Arc::new(config.clone()))?;
@@ -18,8 +20,11 @@
 //! The generated adapter delegates `apply` to the annotated function;
 //! `inject`/`provides` come from the attribute, so dependency-cycle
 //! diagnostics (and reactive gating) see the declarations without the
-//! body running. The plugin struct inherits the function's visibility
-//! and its `Plugin::name` defaults to the function name.
+//! body running. `schema` is an arbitrary expression evaluating to
+//! [`cordis::Schema`] — install and update then validate and resolve
+//! the config before the body runs (see design.md §6 item 4). The
+//! plugin struct inherits the function's visibility and its
+//! `Plugin::name` defaults to the function name.
 
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
@@ -28,12 +33,13 @@ use syn::spanned::Spanned;
 use syn::{ItemFn, LitStr, Token, parse_macro_input};
 
 /// Attribute arguments: `name = "…"`, `required = […]`, `optional = […]`,
-/// `provides = […]`.
+/// `provides = […]`, `schema = <expr>`.
 struct PluginArgs {
     name: Option<LitStr>,
     required: Vec<LitStr>,
     optional: Vec<LitStr>,
     provides: Vec<LitStr>,
+    schema: Option<syn::Expr>,
 }
 
 impl syn::parse::Parse for PluginArgs {
@@ -43,6 +49,7 @@ impl syn::parse::Parse for PluginArgs {
             required: Vec::new(),
             optional: Vec::new(),
             provides: Vec::new(),
+            schema: None,
         };
         while !input.is_empty() {
             let key: syn::Ident = input.parse()?;
@@ -63,6 +70,10 @@ impl syn::parse::Parse for PluginArgs {
                 "provides" => {
                     input.parse::<Token![=]>()?;
                     args.provides = parse_string_list(input)?;
+                }
+                "schema" => {
+                    input.parse::<Token![=]>()?;
+                    args.schema = Some(input.parse()?);
                 }
                 "inject" => {
                     // Grouped form: inject(required = […], optional = […]).
@@ -89,7 +100,7 @@ impl syn::parse::Parse for PluginArgs {
                 other => {
                     return Err(syn::Error::new(
                         key.span(),
-                        format!("unknown #[plugin] key `{other}`; expected name, inject, required, optional, provides"),
+                        format!("unknown #[plugin] key `{other}`; expected name, inject, required, optional, provides, schema"),
                     ));
                 }
             }
@@ -171,6 +182,18 @@ pub fn plugin(args: TokenStream, item: TokenStream) -> TokenStream {
         .map(|lit| lit.value())
         .collect();
 
+    // With `schema = <expr>`, the declared config schema rides along on
+    // the adapter: install/update validate and resolve the config before
+    // the body ever runs (§6 item 4), with zero macro magic at runtime.
+    let schema_impl = attr_args
+        .schema
+        .as_ref()
+        .map(|expr| quote! {
+            fn schema(&self) -> Option<::cordis::Schema> {
+                Some(#expr)
+            }
+        });
+
     let expanded = quote! {
         #func
 
@@ -192,6 +215,8 @@ pub fn plugin(args: TokenStream, item: TokenStream) -> TokenStream {
             fn provides(&self) -> Vec<String> {
                 vec![ #( #provides.to_string() ),* ]
             }
+
+            #schema_impl
 
             fn apply(&self, ctx: &::cordis::Context, config: &::cordis::serde_json::Value) -> ::cordis::PluginResult {
                 #fn_name(ctx, config)

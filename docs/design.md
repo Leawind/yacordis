@@ -165,14 +165,16 @@ provide/set 都先过校验，违规即整次调用失败并保留原值。与�
 2. **无 Proxy 系特性**：traceable/shadow、mixin/accessor、callable
    service、`ctx.xxx` 动态属性均不移植；一律显式 `ctx.get("name")`。
 3. **无 isolate / intercept**（M1 时点的决策）：服务全局可见（按名字）。
-   其中 isolate 已于 M3 落地（§5.3）；intercept、配置拦截合并、
-   `check` 谓词、`Config.merge` 等仍留待后续里程碑。
+   其中 isolate 已于 M3 落地（§5.3）；服务 intercept 已落地（§2.7，
+   fiber 链分层覆盖）；`check` 谓词已落地（§2.8，声明式 schema 门控）；
+   配置拦截合并（`Config.merge`）、typed 服务自定义 `mergeIntercept`
+   等仍留待后续里程碑。
 4. **插件身份** = `Arc` 数据指针（v4 按解析出的函数身份）。同一插件
    值的多次安装共享 runtime 条目；重新包装 `Arc` 视为新插件。
 5. **Failed 即回滚**（见 2.3）。
 6. **长栈拼接**（`composeError`）舍弃；用 logger 的错误链替代。
-7. `Service` 基类模式 → 惯用法：插件体内 `ctx.provide(...)`；宏封装
-   留待 `cordis-macros`。
+7. `Service` 基类模式 → 惯用法：插件体内 `ctx.provide(...)`；`#[plugin]`
+   属性宏已落地（`cordis-macros`，§6 第 7 条），Service 模式宏待需求。
 8. ready/dispose 生命周期事件（v3）不提供；root fiber 即装即活。
 
 ## 4. 里程碑 2（已实现）：二进制插件分发（cdylib + C ABI）
@@ -335,9 +337,9 @@ Value 优先的动态载体、无锁重入（§2.2，FFI 回调内再 install/pr
 ## 6. 路线图
 
 **状态（2026-11-10）：1–8 全部落地**。余量：FFI 侧 `spawn_future`
-（future 构造跨界是独立设计问题）、服务 intercept（研读上游 PR #90
-语义）、非对称签名（需加密依赖）、Service 模式宏、ABI 遥测（buffer
-配平计数）。
+（future 构造跨界是独立设计问题）、typed 服务自定义 `mergeIntercept`
+（与 §2.7/§2.8 同族）、非对称签名（需加密依赖）、Service 模式宏、
+ABI 遥测（buffer 配平计数）。
 
 1. ~~M2：`cordis-plugin-api` + `cordis-loader`~~（✅ 见 §4）。
 2. ~~异步生命周期~~ → 重定义为**框架中介并发**并已落地（§2.6：
@@ -367,8 +369,10 @@ Value 优先的动态载体、无锁重入（§2.2，FFI 回调内再 install/pr
    否则走 `fetch` 下载，按内容哈希入缓存。非对称签名待加密依赖，
    `Verifier` 是插点）。
 7. ~~`cordis-macros`~~（✅ `#[plugin]` 属性宏落地：普通函数 + name/
-   inject(…)/provides 声明 → 生成 Plugin 适配器，声明进入响应式门控与
-   依赖环诊断；async fn 显式拒绝，指回 §2.6）。Service 模式宏待需求。
+   inject(…)/provides/schema 声明 → 生成 Plugin 适配器，声明进入响应
+   式门控与依赖环诊断，`schema = <expr>` 经 `Plugin::schema` 在
+   install/update 时校验并解析配置；async fn 显式拒绝，指回 §2.6）。
+   Service 模式宏待需求。
 8. ~~§4.1 契约的机械化~~（✅ ast-grep lint profile 五条规则随 crate
    分发——裸 spawn / tokio 调度 / 可变 static / exit 钩子 / FFI 手工
    分配；`BuildOptions.lint` 门控构建，`lint_source` 可独立调用，

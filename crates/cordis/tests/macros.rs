@@ -93,3 +93,63 @@ fn plugin_macro_provides_feed_cycle_diagnostics() {
     assert_eq!(cycles.len(), 1, "one stuck group: {cycles:?}");
     assert_eq!(cycles[0].len(), 2, "both members reported");
 }
+
+/// `schema = <expr>` rides the declared config schema on the generated
+/// adapter: a violating config fails the fiber at install with zero
+/// side effects (the body never runs), a passing one is resolved
+/// (defaults filled) before the body sees it, and a violating update
+/// leaves the running config untouched. This locks the macro →
+/// `Plugin::schema` wiring (§6 item 4).
+#[test]
+fn plugin_macro_schema_gates_install_and_update() {
+    let ctx = Context::new();
+
+    #[plugin(
+        name = "validated",
+        schema = Schema::object()
+            .req("uri", Schema::string())
+            .opt_default("port", Schema::integer().at_least(1.0).at_most(65535.0), json!(5432))
+            .build()
+    )]
+    fn validated_plugin(ctx: &Context, config: &Value) -> PluginResult {
+        ctx.provide("db", Arc::new(config.clone()))?;
+        Ok(())
+    }
+
+    // Violating config: the fiber fails at install, body never ran.
+    let handle = ctx
+        .plugin(ValidatedPlugin, json!({ "uri": 42 }))
+        .expect("install still returns a handle");
+    assert_eq!(handle.state(), FiberState::Failed);
+    assert!(
+        handle.error().unwrap().contains("expected a string"),
+        "{}",
+        handle.error().unwrap()
+    );
+    assert!(!ctx.has("db"), "zero side effects: the body never ran");
+
+    // Passing config: body runs with the resolved (default-filled) form.
+    let handle = ctx
+        .plugin(ValidatedPlugin, json!({ "uri": "pg://x" }))
+        .expect("install ok");
+    assert!(handle.is_active());
+    assert_eq!(
+        ctx.get::<Value>("db").map(|v| v.as_ref().clone()),
+        Some(json!({ "uri": "pg://x", "port": 5432 }))
+    );
+
+    // A violating update is rejected; the running config survives.
+    handle
+        .update(json!({ "uri": "pg://y", "port": 0 }))
+        .expect_err("update rejected by the declared schema");
+    assert_eq!(
+        ctx.get::<Value>("db").map(|v| v.as_ref().clone()),
+        Some(json!({ "uri": "pg://x", "port": 5432 }))
+    );
+
+    handle.update(json!({ "uri": "pg://z" })).expect("valid update");
+    assert_eq!(
+        ctx.get::<Value>("db").map(|v| v.as_ref().clone()),
+        Some(json!({ "uri": "pg://z", "port": 5432 }))
+    );
+}
