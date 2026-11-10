@@ -756,3 +756,68 @@ fn typed_events_round_trip() {
     // Typed emit dispatches on the string key (observable via bail).
     ctx.emit_event::<PingEvent>(&Ping { seq: 4 });
 }
+
+// ---------------------------------------------------------------------
+// 14. Cross-batch disposal: global reverse-registration order
+// ---------------------------------------------------------------------
+
+/// An effect registered outside the body's scope (an event listener
+/// firing after the body completed) lands in a later batch on the same
+/// fiber. Disposal must follow global reverse-registration order —
+/// later batch first — so the cascade fired by an earlier batch's
+/// disposers (service withdrawal, dependent deactivation) never
+/// observes the fiber's still-live later registrations. TS keeps one
+/// reverse-ordered disposables list; our batches concatenate to it.
+#[test]
+fn disposal_is_reverse_registration_across_effect_batches() {
+    let ctx = Context::new();
+    let log: Log = Arc::default();
+
+    let plugin = {
+        let log = log.clone();
+        move |ctx: &Context, _config: &Value| -> PluginResult {
+            let own = ctx.clone();
+            ctx.effect("body/a", {
+                let log = log.clone();
+                move |_| {
+                    push(&log, "a:setup");
+                    Ok(Some(dispose_log(&log, "a:dispose")))
+                }
+            })?;
+            // Fires after the body completes: `later/b` attaches outside
+            // the body's scope, forming a second batch on this fiber
+            // (registered through the fiber's own context).
+            own.on("later", {
+                let own = own.clone();
+                let log = log.clone();
+                move |_, _| {
+                    own.effect("later/b", {
+                        let log = log.clone();
+                        move |_| {
+                            push(&log, "b:setup");
+                            Ok(Some(dispose_log(&log, "b:dispose")))
+                        }
+                    })
+                    .expect("register b on the live fiber");
+                    None
+                }
+            })?;
+            Ok(())
+        }
+    };
+
+    let handle = ctx.plugin(plugin, json!(null)).expect("install");
+    assert!(handle.is_active());
+
+    // Fire after the body: `b` joins a fresh batch, registered after
+    // everything in the body batch.
+    ctx.emit("later", &json!(null));
+    assert_eq!(logged(&log), ["a:setup", "b:setup"]);
+
+    handle.dispose();
+    assert_eq!(
+        logged(&log),
+        ["a:setup", "b:setup", "b:dispose", "a:dispose"],
+        "global reverse-registration disposal order across batches"
+    );
+}

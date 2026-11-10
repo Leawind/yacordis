@@ -627,7 +627,14 @@ impl Fiber {
         crate::work::drain_fiber_works(self);
         lifecycle_trace::trace("unload-enter", self);
         self.log(core, LogLevel::Debug, "unloading");
-        for batch in batches {
+        // Global reverse-registration order: batches are appended over
+        // time (body runs first, then out-of-scope registrations from
+        // listeners), so later batches must dispose before earlier ones
+        // — the cascade fired by an earlier batch (service withdrawal,
+        // dependent deactivation) must not observe still-live later
+        // registrations. Within each batch, EffectHandle::dispose
+        // reverses again.
+        for batch in batches.into_iter().rev() {
             batch.dispose();
         }
         let mut inner = self.inner.lock().unwrap();
