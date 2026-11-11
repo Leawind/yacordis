@@ -60,7 +60,7 @@
 //! assert_eq!(app.state(), FiberState::Active);
 //!
 //! // Disposing the provider deactivates the dependent; reinstalling
-//! // reactivates it. Both without touching the process.
+//! // reactivates it. Both in place.
 //! db.dispose();
 //! assert_eq!(app.state(), FiberState::Pending);
 //! # Ok(())

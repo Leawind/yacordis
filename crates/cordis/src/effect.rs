@@ -227,7 +227,7 @@ impl ScopeGuard {
 }
 
 /// Invoke a plugin body, converting panics into plugin errors so a broken
-/// plugin fails its fiber instead of taking down the host.
+/// plugin fails its own fiber.
 pub(crate) fn run_plugin_apply(
     plugin: &Arc<dyn Plugin>,
     ctx: &Context,

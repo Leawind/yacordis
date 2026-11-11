@@ -15,7 +15,7 @@ let db = ctx.plugin(DatabasePlugin, serde_json::json!({ "uri": "pg://localhost" 
 // 声明依赖的插件被响应式驱动：服务出现即激活，消失即停用
 let app = ctx.plugin(AppPlugin, serde_json::json!(null))?;
 db.dispose();                     // app -> Pending，副作用完全回滚
-ctx.plugin(DatabasePlugin, ...)?; // app -> Active，无需重启进程
+ctx.plugin(DatabasePlugin, ...)?; // app -> Active，进程内热生效
 ```
 
 核心能力：
@@ -28,13 +28,11 @@ ctx.plugin(DatabasePlugin, ...)?; // app -> Active，无需重启进程
 - **五模式事件的同步子集**：`emit` / `bail` / `waterfall`（middleware 链），
   字符串名 + serde 类型化双通道，`internal/*` 生命周期事件。
 - **同步优先**：无异步运行时依赖，FFI 回调可安全重入（快照后调用）。
-  这不只是性能取舍：TS 版在异步窗口里持续打磨的一类竞态（epoch ABA、
-  provider/consumer 卸载顺序，见其 issue #34/#110）在同步核中
+  epoch ABA、provider/consumer 卸载顺序等竞态窗口在同步核中
   **结构性不存在**，且每一项免疫都有回归测试锁定。
 - **二进制插件分发**：插件以预编译 cdylib 分发，C ABI（JSON 字节 + 句柄 +
   回调蹦床）与宿主 rustc/依赖版本解耦；运行时安装、热更新配置、卸载回滚，
-  全程不重启。这是 TS 版由 `require()` 免费获得、而这里作为一等能力
-  实现的部分（约 1,400 行 FFI 边界）。
+  全程零重启，作为一等能力实现（约 1,400 行 FFI 边界）。
 
 | crate | 状态 | 说明 |
 |---|---|---|

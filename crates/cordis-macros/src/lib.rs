@@ -19,8 +19,8 @@
 //!
 //! The generated adapter delegates `apply` to the annotated function;
 //! `inject`/`provides` come from the attribute, so dependency-cycle
-//! diagnostics (and reactive gating) see the declarations without the
-//! body running. `schema` is an arbitrary expression evaluating to
+//! diagnostics (and reactive gating) see the declarations up front,
+//! before the body runs. `schema` is an arbitrary expression evaluating to
 //! [`cordis::Schema`] — install and update then validate and resolve
 //! the config before the body runs (see design.md §6 item 4). The
 //! plugin struct inherits the function's visibility and its

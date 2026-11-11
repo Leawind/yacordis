@@ -3,14 +3,12 @@
 //!
 //! This is the Rust answer to cordis's loader: applications install
 //! brand-new plugins — downloaded from the internet, dropped in as
-//! files, or built from source on the spot — into a **running** context,
-//! without restarting the process.
+//! files, or built from source on the spot — into a **running** context.
 //!
 //! Plugins are ordinary `cdylib` crates built against
 //! [`cordis-plugin-api`](cordis_plugin_api); the boundary is a C ABI
 //! (JSON bytes + handles + callback trampolines), so a plugin binary
-//! does **not** need to match the host's rustc version or dependency
-//! graph.
+//! works across the host's rustc versions and dependency graphs.
 //!
 //! ```no_run
 //! use cordis_loader::Loader;

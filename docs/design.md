@@ -13,7 +13,7 @@
 
 | 论文概念 | cordis v4 (TS) | cordis-rust |
 |---|---|---|
-| context（效应与余效应的统一中介） | `Context`（Proxy 对象） | `Context` 句柄 = `Arc<Core>` + 当前 `Weak<Fiber>`；无 Proxy，服务解析显式沿 fiber 父链回溯后落全局 store |
+| context（效应与余效应的统一中介） | `Context`（Proxy 对象） | `Context` 句柄 = `Arc<Core>` + 当前 `Weak<Fiber>`；服务解析显式沿 fiber 父链回溯后落全局 store |
 | revertible effect（可逆效应，时间性可组合） | `ctx.effect()` + Disposable | `Context::effect(label, setup)`；setup 返回 `Result<E: Into<EffectOutcome>, Box<dyn Error>>`，其执行期间经上下文注册的清理函数全部被收集，卸载时逆序执行 |
 | coeffect 规约（余效应声明） | `inject`（string 数组或 `{name: config}`） | `Inject`（`required` / `optional` / builder `req`/`opt`） |
 | reactive coeffect resolution（响应式余效应解析，空间性可组合） | fiber epoch：依赖 fiber uid 串接的签名，变更驱动 `_reload`/`_unload` | `epoch: Option<Vec<u64>>`（必选依赖的提供者 fiber id 序列）；`None` = 依赖缺失；变更经 `refresh() → drive_ops()` 同步驱动 Reload/Unload |
@@ -21,8 +21,8 @@
 | 组件安装 / 移除 | `ctx.plugin()` 返回 thenable；`dispose()` | `ctx.plugin()/plugin_dyn()` 返回 `FiberHandle`；`handle.dispose()`（幂等） |
 | 声明式组件加载器 | `@cordisjs/loader`（配置调和、HMR） | 里程碑 2：`cordis-loader`（cdylib + libloading，见 §4） |
 
-v4 的六态中 `LOADING`/`UNLOADING` 在同步世界里是即时完成的中间态，
-故收敛为四态；`internal/status` 事件携带 `(新状态摘要, 旧状态)`，与 v4 一致。
+同步世界里 `LOADING`/`UNLOADING` 即时完成，状态收敛为四态；
+`internal/status` 事件携带 `(新状态摘要, 旧状态)`，与 v4 一致。
 
 ## 2. 核心机制
 
@@ -58,9 +58,8 @@ v4 的六态中 `LOADING`/`UNLOADING` 在同步世界里是即时完成的中间
 ### 2.3 失败语义（有意偏离 v4）
 
 - 插件体出错（含 panic，`catch_unwind` 转换）：**立即回滚**该次加载
-  已收集的全部 effect，fiber 进入 `Failed`，错误保留至 `update()`。
-  v4 会把部分 effect 留到下次卸载；我们认为「Failed 即无副作用」
-  更符合论文的时间性可组合承诺。
+  已收集的全部 effect，fiber 进入 `Failed`，错误保留至 `update()`；
+  「Failed 即无副作用」兑现论文的时间性可组合承诺。
 - `handle.update(config)`：经 `internal/update` waterfall（中间件可
   改写配置）→ 清除错误 → 强制重启（epoch 先置 `None` 再重算，保证
   依赖未变时也重跑插件体）→ 若仍失败则返回错误。
@@ -74,7 +73,7 @@ v4 的六态中 `LOADING`/`UNLOADING` 在同步世界里是即时完成的中间
 | `emit` | `emit` | 注册序全部调用，忽略返回值 |
 | `bail` / `serial` | `bail` | 注册序，首个非 `None` 返回值短路（异步聚合待异步里程碑） |
 | `parallel` | —（暂缺） | 需要 async 聚合，见路线图 |
-| `waterfall` | `middleware` + `waterfall` | v4 用同一 hook 表加 `next` 参数约定；Rust 静态签名不同，故注册表分开。panic 的中间件使链**中止**并返回错误（值通道永不混入 panic 副产物）；`emit`/`bail` 的监听器 panic 则吞掉转日志（§5.2） |
+| `waterfall` | `middleware` + `waterfall` | v4 用同一 hook 表加 `next` 参数约定；本实现 `middleware`/`waterfall` 各用独立注册表、静态签名显式。panic 的中间件使链**中止**并返回错误（值通道只承载完成的值）；`emit`/`bail` 的监听器 panic 则吞掉转日志（§5.2） |
 
 - 监听器统一签名 `Fn(&Context, &Value) -> Option<Value>`，字符串名
   注册；`Event` trait（`NAME` + `Args`/`Ret`）提供 serde 类型化封装。
@@ -86,7 +85,7 @@ v4 的六态中 `LOADING`/`UNLOADING` 在同步世界里是即时完成的中间
   `internal/update`（配置更新 waterfall）。
 - isolate 已落地（§5.3：服务 store 按 `(name, label)` 键控，notify 按
   组隔离，事件级联不跨组）；v4 的 thisArg 过滤（`Context.filter`）与
-  `global` 选项仍延后——事件分发本身尚无按组过滤。
+  `global` 选项待事件分发的按组过滤能力落地。
 
 ### 2.5 服务双通道
 
@@ -98,13 +97,12 @@ v4 的六态中 `LOADING`/`UNLOADING` 在同步世界里是即时完成的中间
 ### 2.6 框架中介并发（async as plumbing）
 
 异步里程碑的落地形态（§4.1 I1 的实现）：**生命周期保持同步串行**（
-结构性免疫的来源，见 §7），并发作为框架管道提供，不引入插件侧第二
-调度域，也不做 async apply/dispose（同步安装契约下 async body 仍会
-阻塞调用线程，只增加复杂度；与 v4 的分歧记录于 §3）。
+结构性免疫的来源，见 §7），并发作为框架管道提供；与 v4 的分歧
+记录于 §3。
 
 - **`ctx.run_blocking(label, work, on_done)`**：`work` 在专用框架线程
-  上运行，拿不到 `Context`（飞行中改框架状态会与回滚竞态），只有协作
-  式取消 token；完成后框架在工作线程上发起 `on_done(&Context, outcome)`
+  上运行，仅持协作式取消 token；完成后框架在工作线程上发起
+  `on_done(&Context, outcome)`
   ——这是框架发起的调用，可用全套 context API（与 FFI 回调同一重入
   契约）。fiber 已亡则投递丢弃。
 - **`ctx.spawn_future(label, fut, on_done)`**：future 在框架的
@@ -116,9 +114,8 @@ v4 的六态中 `LOADING`/`UNLOADING` 在同步世界里是即时完成的中间
   并发插件代码（`drain_fiber_works`）。join 对「正在执行本单元完成
   回调的线程」自跳（thread-local 守卫），回调里 dispose 自身 fiber
   不会自死锁。
-- **执行器中断语义**：任务停泊在 in-flight 注册表中（非仅队列），
-  否则 Pending 之后的任务会从执行器视野消失、中止请求永远无人观察
-  （本节实现曾因此死锁，测试锁定于 `tests/work.rs`）。
+- **执行器中断语义**：任务停泊在 in-flight 注册表中，中止请求对
+  Pending 任务保持可见（测试锁定于 `tests/work.rs`）。
 - `parallel`/`serial` 分发模式需要 async 监听器聚合，待需求出现。
 
 ### 2.7 服务拦截（intercept）
@@ -126,8 +123,7 @@ v4 的六态中 `LOADING`/`UNLOADING` 在同步世界里是即时完成的中间
 上游 PR #90/#206 的 intercept 语义研读结论：intercept 是**沿上下文树
 的服务配置分层覆盖**——每层 ctx 可为某服务注入一段配置覆盖，解析时
 沿原型链（我们这里是 fiber 链）收集各层值，浅合并（`Object.assign`
-语义），**最近祖先优先**，服务自身 inject 的元数据为基底；不是
-get 时值拦截。
+语义），**最近祖先优先**，服务自身 inject 的元数据为基底。
 
 cordis-rust 的首期落地（`ctx.intercept(name, value)`，JSON 服务）：
 
@@ -141,8 +137,8 @@ cordis-rust 的首期落地（`ctx.intercept(name, value)`，JSON 服务）：
 - **纯视图层**：不影响 epoch、不触发 notify、不参与依赖解析——
   提供者与依赖方对此无感知，provider 不因 intercept 重载。
 - 与上游的偏差：v4 的 Service 类携带 metadata 并自定义
-  `mergeIntercept`；我们的 typed 服务是无元数据的裸值，故 typed
-  通道不参与合并（JSON 通道承载全部拦截语义）。`resolveConfig`
+  `mergeIntercept`；本实现 typed 服务为无元数据的裸值，拦截合并由
+  JSON 通道承载。`resolveConfig`
   的职责由 schema 默认值（§6.4）承担；`check` 谓词已落地为
   `ctx.provide_schema`（§2.8）。
 
@@ -150,42 +146,42 @@ cordis-rust 的首期落地（`ctx.intercept(name, value)`，JSON 服务）：
 
 `ctx.provide_schema(name, schema)`：为某 JSON 服务（按
 `(name, isolate label)` 键控）登记一个值 schema——此后该服务的每次
-provide/set 都先过校验，违规即整次调用失败并保留原值。与上游
-`provide(name, service, check)` 的对应：check 从「服务类自述的实例
-校验」改为「声明式 schema 门控」，复用配置校验的 DSL，typed 服务
+provide/set 都先过校验，违规即整次调用失败并保留原值。对应上游
+`provide(name, service, check)` 的 check：以「声明式 schema 门控」
+承载，复用配置校验的 DSL；typed 服务
 旁路（与 intercept 同一取舍）。登记是 effect——随 fiber 卸载解除，
 所有权以 schema 节点指针判等（防重注册竞争下的误删）。
 
 ## 3. 与 TS 版的有意分歧（截至 M1）
 
-1. **纯同步**：disposer/apply 不返回 Future；`parallel`/`serial` 的
-   异步聚合暂缺（`serial` 语义并入 `bail`）。并发需求由框架管道承担
-   （§2.6），生命周期签名保持同步是模型选择而非缺口；v4 的 fiber
+1. **纯同步**：生命周期签名保持同步（模型选择）；并发需求由框架管道
+   承担（§2.6），`serial` 语义并入 `bail`；v4 的 fiber
    inertia 对应本实现的 `quiesce`/排空语义。
-2. **无 Proxy 系特性**：traceable/shadow、mixin/accessor、callable
-   service、`ctx.xxx` 动态属性均不移植；一律显式 `ctx.get("name")`。
-3. **无 isolate / intercept**（M1 时点的决策）：服务全局可见（按名字）。
-   其中 isolate 已于 M3 落地（§5.3）；服务 intercept 已落地（§2.7，
+2. **显式服务访问**：一律 `ctx.get("name")`（对应 v4 的
+   traceable/shadow、mixin/accessor、callable service、`ctx.xxx`
+   动态属性等访问形态）。
+3. **服务可见性**（M1 时点：全局可见，按名字）：isolate 已于 M3
+   落地（§5.3）；服务 intercept 已落地（§2.7，
    fiber 链分层覆盖）；`check` 谓词已落地（§2.8，声明式 schema 门控）；
    配置拦截合并（`Config.merge`）、typed 服务自定义 `mergeIntercept`
-   等仍留待后续里程碑。
+   待后续里程碑。
 4. **插件身份** = `Arc` 数据指针（v4 按解析出的函数身份）。同一插件
    值的多次安装共享 runtime 条目；重新包装 `Arc` 视为新插件。
 5. **Failed 即回滚**（见 2.3）。
-6. **长栈拼接**（`composeError`）舍弃；用 logger 的错误链替代。
+6. 错误链由 logger 承载（对应 v4 的 `composeError` 长栈拼接）。
 7. `Service` 基类模式 → 惯用法：插件体内 `ctx.provide(...)`；`#[plugin]`
    属性宏已落地（`cordis-macros`，§6 第 7 条），Service 模式宏待需求。
-8. ready/dispose 生命周期事件（v3）不提供；root fiber 即装即活。
+8. root fiber 即装即活。
 
 ## 4. 里程碑 2（已实现）：二进制插件分发（cdylib + C ABI）
 
-硬性需求：插件以预编译 cdylib 分发，用户从互联网/文件安装，宿主不
-重启、不要求编译环境；「现场编写并构建」仅为开发者路径，产物仍走同
+硬性需求：插件以预编译 cdylib 分发，用户从互联网/文件安装，宿主
+全程保持运行；「现场编写并构建」仅为开发者路径，产物仍走同
 一加载管线。
 
-宿主与插件之间**不做 Rust 类型直通**（预编译产物无法保证与宿主同
-rustc/同依赖版本），边界为 C ABI（`cordis-plugin-api`，`ABI_VERSION = 2`；
-v2 增加 `run_blocking`/`work_cancelled`/`work_cancel`）：
+宿主与插件之间以 C ABI 为边界（`cordis-plugin-api`，`ABI_VERSION = 2`；
+v2 增加 `run_blocking`/`work_cancelled`/`work_cancel`），插件产物与
+宿主的 rustc/依赖版本两相独立：
 
 - **传输介质**：JSON 字节（`RawBuffer`，配置/事件/服务值/错误消息）、
   u64 句柄（宿主侧句柄表持有的 Context/Fiber/Effect）、
@@ -205,11 +201,11 @@ v2 增加 `run_blocking`/`work_cancelled`/`work_cancel`）：
   取消 token 句柄（经 `work_cancelled` 轮询），非 context 句柄；
   完成回调以 JSON 信封
   （`{"tag": "done|cancelled|failed|panicked", ...}`）交付结果。
-  蹦床 `catch_unwind` 保证插件 panic → fiber `Failed` 而非 abort。
+  蹦床 `catch_unwind` 保证插件 panic → fiber `Failed`。
 - **回调状态机**：一次性回调（effect setup/disposer）被二次调用返回
   `CODE_REUSED`；状态盒由 `drop_fn` 释放，与调用解耦。
-- **卸载策略**：保留代码映射（状态效应完全回滚，机器码页留驻至进程
-  退出），规避「卸载仍在执行的代码」的 UB。
+- **卸载策略**：保留代码映射——状态效应完全回滚，机器码页留驻至进程
+  退出。
 - **加载源**：`Loader::load_file`（本地文件）、`Loader::fetch`
   （URL 下载，`download` feature，ureq）、`Loader::build_and_load`
   （调用 cargo 构建源码后加载，`--message-format=json` 解析 cdylib
@@ -230,8 +226,8 @@ Value 优先的动态载体、无锁重入（§2.2，FFI 回调内再 install/pr
 ### 4.1 卸载限制契约（插件规范不变量）
 
 「干净卸载」分三层：①**语义干净**（经框架注册的一切可证明回收）——
-由 effect 收集结构保证，无需插件作者配合；②**代码干净**（真正 unmap
-不 UB）——以 keep-mapped 策略规避（见上），放弃证明换取安全；③
+由 effect 收集结构保证，无需插件作者配合；②**代码干净**（代码页
+全程有效）——由 keep-mapped 策略承载（见上）；③
 **进程干净**（长期运行无累积残留）——依赖插件作者遵守以下三条不变量：
 
 - **I1（单调度域）**：插件代码只在框架发起的调用中执行（vtable 调用，
@@ -252,7 +248,7 @@ Value 优先的动态载体、无锁重入（§2.2，FFI 回调内再 install/pr
 强制执行矩阵：I1 由 ABI 结构（入口仅 vtable）+ lint 保证；I2 宿主半边
 由 dispose 审计做运行时断言、插件半边由 lint profile 强制（
 `build_and_load` 路径宿主持有源码可机械执行；预编译二进制分发退化为
-信任发布者）；I3 由 lint；keep-mapped 兜底保证违规退化为泄漏而非 UB。
+信任发布者）；I3 由 lint；keep-mapped 兜底保证违规至多退化为内存泄漏。
 子进程是 CPU 并行与故障隔离的合规逃生舱——进程死亡是唯一完美的卸载。
 
 ## 5. 设计评审记录（2026-09-06，里程碑 3 后）
@@ -276,23 +272,22 @@ Value 优先的动态载体、无锁重入（§2.2，FFI 回调内再 install/pr
 
 ### 5.2 复核后维持的决策（含理由）
 
-- **同步优先**：M1 阶段正确的复杂度取舍。代价已知且接受：`Plugin::
-  apply`/`Disposable` 的同步签名是单向门，引入异步时现存插件代码
-  必然破坏；`sleep` 阻塞调用线程，插件体内不得长阻塞（timer 文档已写明）。
+- **同步优先**：M1 阶段正确的复杂度取舍；`Plugin::
+  apply`/`Disposable` 为同步签名（单向门），`sleep` 阻塞调用线程，
+  插件体内不得长阻塞（timer 文档已写明）。
 - **effect 认领模型**（嵌套作用域 + 卸载逆序展平）：与 v4 逐点对齐，
   测试覆盖嵌套与手动中途释放。
 - **epoch = `Option<Vec<u64>>`**：与 v4 字符串签名等价且更廉价；
   `u64::MAX` 兜底（依赖实现者已死）实践中不可达，仅防御性保留。
-- **Failed 即立即回滚**（偏离 v4 的残留语义）：保证时间性可组合承诺，
-  不回退。
-- **C ABI 而非 Rust 类型直通**：预编译插件与宿主 rustc/依赖解耦的
-  唯一可行解；`malloc/free` 共享分配器消除配对负担。限制：Windows
-  静态 CRT（/MT）构建的插件会破坏共享堆假设，已注明于 §4。
-- **卸载保留代码映射**：Rust 无法证明代码静默，泄漏机器码页换取
-  卸载安全，语义上状态层面仍完全可逆。
-- **waterfall 与普通 hook 分表**：静态签名无法复用 v4 的 `next` 参数
-  约定；已文档化。
-- **监听器 panic 吞掉转日志**（v4 会向 emit 传播）：宿主健壮性优先，
+- **Failed 即立即回滚**：兑现时间性可组合承诺。
+- **C ABI 边界**：插件产物与宿主的 rustc/依赖版本两相独立；
+  `malloc/free` 共享分配器统一配对。限制：Windows
+  静态 CRT（/MT）构建的插件自带独立堆，已注明于 §4。
+- **卸载保留代码映射**：机器码页留驻换取卸载安全，
+  语义上状态层面完全可逆。
+- **waterfall 与普通 hook 分表**：`middleware` 与 `waterfall` 注册表
+  独立、静态签名显式；已文档化。
+- **监听器 panic 吞掉转日志**：宿主健壮性优先，
   与 FFI 侧行为一致。
 
 ### 5.3 设计债清偿（2026-09-06 第二轮）
@@ -344,8 +339,8 @@ ABI 遥测（buffer 配平计数）。
 1. ~~M2：`cordis-plugin-api` + `cordis-loader`~~（✅ 见 §4）。
 2. ~~异步生命周期~~ → 重定义为**框架中介并发**并已落地（§2.6：
    `run_blocking` / `spawn_future` + 排空先于回滚；FFI 侧经 ABI v2
-   暴露 `run_blocking`，ABI v1 插件不再兼容）。async apply/dispose
-   为有意不做（§3）；`parallel`/`serial` 分发待 async 监听器需求；
+   暴露 `run_blocking`，插件 ABI 以 v2 为准）。
+   `parallel`/`serial` 分发待 async 监听器需求；
    FFI 侧 `spawn_future` 待设计（future 构造跨界是独立问题）。
 3. ~~`cordis-timer` / `cordis-logger`~~（✅ M3：同步线程定时轮 + 分级
    日志服务；`sleep` 以 effect 挂靠 fiber，卸载即唤醒，详见各自 crate
@@ -364,7 +359,7 @@ ABI 遥测（buffer 配平计数）。
    FFI 侧对应 `PluginLibrary` 级替换（keep-mapped 下旧库留驻、新库接管
    fibers）待做。
 6. ~~插件仓库索引~~（✅ `cordis-loader::registry`：静态 index.json +
-   最小 semver（`^`/`~`/比较/精确，无预发布）+ 依赖无关的 sha-256
+   最小 semver（`^`/`~`/比较/精确；预发布待支持）+ 依赖无关的 sha-256
    （FIPS 180-4，NIST 向量锁定）内容寻址校验 + ABI 门；本地路径直取、
    否则走 `fetch` 下载，按内容哈希入缓存。非对称签名待加密依赖，
    `Verifier` 是插点）。
@@ -383,7 +378,7 @@ ABI 遥测（buffer 配平计数）。
 ## 7. TS 上游对照与跟进（2026-11-10，rc.9 → rc.12）
 
 cordis TS（v4）自上次快照（2026-09-06，rc.9）推进至 rc.12，76 个提交。
-跟进策略不变：**不追功能，盯 cordiverse/cordis 的 issue 列表**——那里的
+跟进策略：**盯 cordiverse/cordis 的 issue 列表**——那里的
 问题就是这个范式在真实负载下暴露的裂缝预告片。逐项对照：
 
 | 上游 issue | 主题 | cordis-rust 状态 |
@@ -427,11 +422,10 @@ cordis TS（v4）自上次快照（2026-09-06，rc.9）推进至 rc.12，76 个�
 - **#109/#133/#189 等并发修复**：同步核中同类窗口结构性不存在或已有
   对应机制（§5.3），逐一核对过，无需改动。
 
-两个可以写进定位的差异点（同步模型的红利，均非有意为之的性能取舍，
-而是模型选择带来的结构性消除）：其一，v4 的 #34/#110 类竞态根植于
-「异步生命周期 + 事件循环」，同步核里这一整类窗口不存在；其二，
-二进制插件分发（cdylib + C ABI）在 TS 里由 `require()` 免费提供，
-在我们这里是约 1,400 行的一等能力（§4）——两边的成本结构互为镜像。
+同步模型的两个定位差异点（模型选择带来的结构性红利）：其一，
+epoch ABA、provider/consumer 卸载顺序等竞态窗口在同步核中
+结构性不存在（§7 #34/#110）；其二，
+二进制插件分发（cdylib + C ABI）是约 1,400 行的一等能力（§4）。
 
 code size 对比（2026-09-06 时点，仅产品代码）：核心 TS 1,592 行 vs
 Rust 2,059 行（+29%，多出的是 TS 靠事件循环与 Proxy 免费获得的部分：

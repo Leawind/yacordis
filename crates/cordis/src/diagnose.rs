@@ -14,7 +14,7 @@
 //! with more than one member — or a single member claiming its own
 //! missing dependency — is a stuck group. Satisfied dependencies produce
 //! no edges, so a group is only reported when its members are genuinely
-//! stuck, not merely pending behind a slow provider.
+//! stuck.
 
 use std::collections::HashMap;
 use std::sync::Arc;

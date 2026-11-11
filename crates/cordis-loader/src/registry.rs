@@ -19,7 +19,7 @@
 //! verifies its sha-256 checksum and ABI version, and loads it. Relative
 //! artifact paths are joined with the repository base URL; a path that
 //! already exists on disk is used directly, which keeps the layer
-//! testable without a network.
+//! testable offline.
 //!
 //! Integrity is content-addressed (sha-256 over the artifact bytes),
 //! so a compromised index entry with a mismatched checksum is rejected

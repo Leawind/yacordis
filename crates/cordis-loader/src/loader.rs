@@ -211,7 +211,7 @@ const LINT_CONFIG: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/ast-grep-rules/s
 /// Run the bundled ast-grep unload-contract lint over a plugin source
 /// tree. Returns the combined findings (rejecting the build) when the
 /// linter is installed and reports violations; returns `Ok` when
-/// ast-grep is unavailable (the lint is best-effort, not a gate).
+/// ast-grep is unavailable (the lint is best-effort).
 pub fn lint_source(source_dir: impl AsRef<Path>) -> Result<(), String> {
     let output = std::process::Command::new("ast-grep")
         .args(["scan", "--config", LINT_CONFIG])

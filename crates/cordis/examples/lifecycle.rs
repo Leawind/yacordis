@@ -88,7 +88,7 @@ fn main() -> Result<(), CordisError> {
     db.dispose();
     println!("   app.state = {:?}", app.state());
 
-    println!("6. reinstall: app comes back without touching the host");
+    println!("6. reinstall: app comes back in place");
     let db2 = ctx.plugin(DatabasePlugin, json!({ "uri": "postgres://localhost" }))?;
     println!("   app.state = {:?} again", app.state());
     drop(db2);

@@ -342,7 +342,7 @@ impl Fiber {
     }
 
     /// Append an effect batch to this fiber's effect list. If the fiber is
-    /// going away, the effect is reverted immediately instead of leaking.
+    /// going away, the effect is reverted immediately.
     pub(crate) fn push_effect_batch(&self, handle: EffectHandle) {
         let revert_now = {
             let mut inner = self.inner.lock().unwrap();

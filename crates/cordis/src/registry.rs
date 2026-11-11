@@ -32,7 +32,7 @@ pub(crate) struct Runtime {
 pub(crate) struct Registry {
     map: HashMap<PluginKey, Arc<Runtime>>,
     /// name → fibers injecting it (required or optional). Notify walks
-    /// this index instead of scanning every fiber; entries are weak and
+    /// this index; entries are weak and
     /// pruned on sight, disposal unregisters explicitly.
     inject_index: HashMap<String, Vec<Weak<Fiber>>>,
 }

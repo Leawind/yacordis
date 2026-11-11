@@ -5,7 +5,7 @@
 //! `resolveConfig` — resolves the config by filling declared defaults.
 //! Validation runs before the plugin body on install and update; a
 //! rejected config leaves the fiber with no side effects (`Failed` /
-//! update error) instead of a partially-executed body.
+//! update error).
 //!
 //! Unknown object fields are reported by default (typo protection);
 //! declare [`SchemaBuilder::allow_unknown`] to opt out.

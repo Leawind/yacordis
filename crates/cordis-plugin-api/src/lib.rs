@@ -55,8 +55,8 @@
 //! # Trust model
 //!
 //! Loading a cdylib executes third-party native code in-process — the
-//! same trust level as `require()` in the TypeScript original. The ABI
-//! provides compatibility, not sandboxing.
+//! same trust level as `require()` in the TypeScript original; the ABI
+//! is a compatibility layer.
 //!
 //! # Thread safety
 //!

@@ -87,7 +87,7 @@ impl fmt::Display for PluginError {
 
 /// Note: deliberately does **not** implement `std::error::Error`, so that
 /// the blanket `From<E: Error>` keeps `?` working inside plugin bodies
-/// without conflicting with the reflexive `From<T> for T`.
+/// alongside the reflexive `From<T> for T`.
 impl<E: std::error::Error + Send + Sync + 'static> From<E> for PluginError {
     fn from(e: E) -> Self {
         PluginError(Box::new(e))
