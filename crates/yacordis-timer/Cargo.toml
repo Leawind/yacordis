@@ -1,0 +1,11 @@
+[package]
+name = "yacordis-timer"
+description = "Scope-released timer service for yacordis (setTimeout/setInterval/sleep)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+yacordis = { workspace = true }
+serde_json = { workspace = true }

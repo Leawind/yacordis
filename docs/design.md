@@ -1,6 +1,6 @@
 # Cordis Rust — 设计文档
 
-本文档记录 cordis-rust 的概念来源、与 TypeScript 版（cordis v4）的对应关系、
+本文档记录 yacordis 的概念来源、与 TypeScript 版（cordis v4）的对应关系、
 有意的分歧，以及二进制组件分发（cdylib + C ABI）的预留设计。
 
 参考资料：
@@ -9,9 +9,9 @@
 - 参考实现：<https://github.com/cordiverse/cordis>（main 分支 = v4）
 - 本仓库里程碑 1 范围：同步核心（Context / Fiber / Effect / 事件 / 服务）
 
-## 1. 概念映射（论文 ↔ v4 ↔ cordis-rust）
+## 1. 概念映射（论文 ↔ v4 ↔ yacordis）
 
-| 论文概念 | cordis v4 (TS) | cordis-rust |
+| 论文概念 | cordis v4 (TS) | yacordis |
 |---|---|---|
 | context（效应与余效应的统一中介） | `Context`（Proxy 对象） | `Context` 句柄 = `Arc<Core>` + 当前 `Weak<Fiber>`；服务解析显式沿 fiber 父链回溯后落全局 store |
 | revertible effect（可逆效应，时间性可组合） | `ctx.effect()` + Disposable | `Context::effect(label, setup)`；setup 返回 `Result<E: Into<EffectOutcome>, Box<dyn Error>>`，其执行期间经上下文注册的清理函数全部被收集，卸载时逆序执行 |
@@ -19,7 +19,7 @@
 | reactive coeffect resolution（响应式余效应解析，空间性可组合） | fiber epoch：依赖 fiber uid 串接的签名，变更驱动 `_reload`/`_unload` | `epoch: Option<Vec<u64>>`（必选依赖的提供者 fiber id 序列）；`None` = 依赖缺失；变更经 `refresh() → drive_ops()` 同步驱动 Reload/Unload |
 | component（组件 = effect + coeffect 的结合） | `Fiber`（组件实例，六态） | `Fiber`（四态：`Pending / Active / Failed / Disposed`） |
 | 组件安装 / 移除 | `ctx.component()` 返回 thenable；`dispose()` | `ctx.component()/component_dyn()` 返回 `FiberHandle`；`handle.dispose()`（幂等） |
-| 声明式组件加载器 | `@cordisjs/loader`（配置调和、HMR） | 里程碑 2：`cordis-loader`（cdylib + libloading，见 §4） |
+| 声明式组件加载器 | `@cordisjs/loader`（配置调和、HMR） | 里程碑 2：`yacordis-loader`（cdylib + libloading，见 §4） |
 
 同步世界里 `LOADING`/`UNLOADING` 即时完成，状态收敛为四态；
 `internal/status` 事件携带 `(新状态摘要, 旧状态)`，与 v4 一致。
@@ -68,7 +68,7 @@
 
 同步世界保留三种分发模式（v4 五模式的同步子集）：
 
-| v4 | cordis-rust | 说明 |
+| v4 | yacordis | 说明 |
 |---|---|---|
 | `emit` | `emit` | 注册序全部调用，忽略返回值 |
 | `bail` / `serial` | `bail` | 注册序，首个非 `None` 返回值短路（异步聚合待异步里程碑） |
@@ -125,7 +125,7 @@
 沿原型链（我们这里是 fiber 链）收集各层值，浅合并（`Object.assign`
 语义），**最近祖先优先**，服务自身 inject 的元数据为基底。
 
-cordis-rust 的首期落地（`ctx.intercept(name, value)`，JSON 服务）：
+yacordis 的首期落地（`ctx.intercept(name, value)`，JSON 服务）：
 
 - **可见性向下**：fiber 上登记的层，自己与后代可见；兄弟与祖先
   不可见（与上游原型链语义一致）。解析沿请求 ctx 的 fiber 祖先链
@@ -170,7 +170,7 @@ provide/set 都先过校验，违规即整次调用失败并保留原值。对�
 5. **Failed 即回滚**（见 2.3）。
 6. 错误链由 logger 承载（对应 v4 的 `composeError` 长栈拼接）。
 7. `Service` 基类模式 → 惯用法：组件体内 `ctx.provide(...)`；`#[component]`
-   属性宏已落地（`cordis-macros`，§6 第 7 条），Service 模式宏待需求。
+   属性宏已落地（`yacordis-macros`，§6 第 7 条），Service 模式宏待需求。
 8. root fiber 即装即活。
 
 ## 4. 里程碑 2（已实现）：二进制组件分发（cdylib + C ABI）
@@ -179,9 +179,9 @@ provide/set 都先过校验，违规即整次调用失败并保留原值。对�
 全程保持运行；「现场编写并构建」仅为开发者路径，产物仍走同
 一加载管线。
 
-宿主与组件之间以 C ABI 为边界（`cordis-component-api`，`ABI_VERSION = 3`；
+宿主与组件之间以 C ABI 为边界（`yacordis-component-api`，`ABI_VERSION = 4`；
 v2 增加 `run_blocking`/`work_cancelled`/`work_cancel`，v3 将导出符号
-更名为 `cordis_component_*`），组件产物与
+更名为 `cordis_component_*`，v4 随项目更名改为 `yacordis_component_*`），组件产物与
 宿主的 rustc/依赖版本两相独立：
 
 - **传输介质**：JSON 字节（`RawBuffer`，配置/事件/服务值/错误消息）、
@@ -192,9 +192,9 @@ v2 增加 `run_blocking`/`work_cancelled`/`work_cancel`，v3 将导出符号
   只有一个 libc 实例），任意一侧皆可释放，无需配对各侧分配器。
   **CRT 注意**：组件必须动态链接 CRT——Windows 静态 CRT（/MT）构建的
   组件自带独立堆，跨界 `free` 违反共享分配器假设（UB）。
-- **组件导出**：`cordis_abi_version()`（握手，不符拒绝加载）、
-  `cordis_component_manifest()`（名称 + required/optional 依赖）、
-  `cordis_component_apply()`（apply 回调）、`cordis_component_free_buffer()`；
+- **组件导出**：`yacordis_abi_version()`（握手，不符拒绝加载）、
+  `yacordis_component_manifest()`（名称 + required/optional 依赖）、
+  `yacordis_component_apply()`（apply 回调）、`yacordis_component_free_buffer()`；
   由 `register_component!` 宏生成（edition 2024 的 unsafe attribute 语法）。
 - **宿主 vtable**（单个静态实例）：effect/on/once/dispose_handle/
   provide/set/get/has/emit/bail/component/fiber_dispose/log/free_buffer/
@@ -211,10 +211,10 @@ v2 增加 `run_blocking`/`work_cancelled`/`work_cancel`，v3 将导出符号
   （URL 下载，`download` feature，ureq）、`Loader::build_and_load`
   （调用 cargo 构建源码后加载，`--message-format=json` 解析 cdylib
   产物并合并编译诊断）。
-- **组件作者视角**：依赖 `cordis-component-api`，写普通 `impl Component` +
+- **组件作者视角**：依赖 `yacordis-component-api`，写普通 `impl Component` +
   `register_component!(...)`，crate-type = `["cdylib"]`；API 形状与 native
-  `cordis::Component` 一致。演示 fixture 与集成测试见
-  `crates/cordis-loader/tests/`（跨 edition：组件侧 2021，宿主 2024）。
+  `yacordis::Component` 一致。演示 fixture 与集成测试见
+  `crates/yacordis-loader/tests/`（跨 edition：组件侧 2021，宿主 2024）。
 
 core 为此提供的保证：统一 `Arc<dyn Component>` 形态（`component_dyn`）、
 Value 优先的动态载体、无锁重入（§2.2，FFI 回调内再 install/provide/on
@@ -337,16 +337,16 @@ Value 优先的动态载体、无锁重入（§2.2，FFI 回调内再 install/pr
 （与 §2.7/§2.8 同族）、非对称签名（需加密依赖）、Service 模式宏、
 ABI 遥测（buffer 配平计数）。
 
-1. ~~M2：`cordis-component-api` + `cordis-loader`~~（✅ 见 §4）。
+1. ~~M2：`yacordis-component-api` + `yacordis-loader`~~（✅ 见 §4）。
 2. ~~异步生命周期~~ → 重定义为**框架中介并发**并已落地（§2.6：
    `run_blocking` / `spawn_future` + 排空先于回滚；FFI 侧经 ABI v2
    暴露 `run_blocking`，组件 ABI 现为 v3）。
    `parallel`/`serial` 分发待 async 监听器需求；
    FFI 侧 `spawn_future` 待设计（future 构造跨界是独立问题）。
-3. ~~`cordis-timer` / `cordis-logger`~~（✅ M3：同步线程定时轮 + 分级
+3. ~~`yacordis-timer` / `yacordis-logger`~~（✅ M3：同步线程定时轮 + 分级
    日志服务；`sleep` 以 effect 挂靠 fiber，卸载即唤醒，详见各自 crate
    文档）。
-4. ~~配置校验~~（✅ `cordis::schema`：可组合 DSL——类型/长度/范围/
+4. ~~配置校验~~（✅ `yacordis::schema`：可组合 DSL——类型/长度/范围/
    枚举/数组/对象字段校验，`opt_default` 即 resolveConfig 等价的默认值
    解析；经 `Component::schema` 挂接，install 前拒绝 → `Failed` 零副作用，
    update 拒绝 → 保留旧配置，通过的配置以解析后形态持久化。FFI 组件
@@ -359,12 +359,12 @@ ABI 遥测（buffer 配平计数）。
    已落地（`Context::replace_component` + `internal/replace`，见 §7.1）；
    FFI 侧对应 `ComponentLibrary` 级替换（keep-mapped 下旧库留驻、新库接管
    fibers）待做。
-6. ~~组件仓库索引~~（✅ `cordis-loader::registry`：静态 index.json +
+6. ~~组件仓库索引~~（✅ `yacordis-loader::registry`：静态 index.json +
    最小 semver（`^`/`~`/比较/精确；预发布待支持）+ 依赖无关的 sha-256
    （FIPS 180-4，NIST 向量锁定）内容寻址校验 + ABI 门；本地路径直取、
    否则走 `fetch` 下载，按内容哈希入缓存。非对称签名待加密依赖，
    `Verifier` 是插点）。
-7. ~~`cordis-macros`~~（✅ `#[component]` 属性宏落地：普通函数 + name/
+7. ~~`yacordis-macros`~~（✅ `#[component]` 属性宏落地：普通函数 + name/
    inject(…)/provides/schema 声明 → 生成 Component 适配器，声明进入响应
    式门控与依赖环诊断，`schema = <expr>` 经 `Component::schema` 在
    install/update 时校验并解析配置；async fn 显式拒绝，指回 §2.6）。
@@ -383,7 +383,7 @@ cordis TS（v4）自上次快照（2026-09-06，rc.9）推进至
 跟进策略：**盯 cordiverse/cordis 的 issue 列表**——那里的
 问题就是这个范式在真实负载下暴露的裂缝预告片。逐项对照：
 
-| 上游 issue | 主题 | cordis-rust 状态 |
+| 上游 issue | 主题 | yacordis 状态 |
 |---|---|---|
 | #34 | epoch ABA：async 加载期间 update 改配置，epoch 感知不到 | **双双闭合**：上游以 fiber revision 计数实现 stale-guard（#189）；我们的 op epoch 快照 + stale-guard（§5.3）机制对等，测试锁定于 `tests/stale_ops.rs` |
 | #96 / #91 | 卸载中注册 effect/listener → 泄漏 | 上游仍 open；**已覆盖**：`unloading` 态注册一律 `InactiveContext`、effect 即时回滚，测试锁定于 `tests/unloading.rs` |
@@ -428,7 +428,7 @@ cordis TS（v4）自上次快照（2026-09-06，rc.9）推进至
   契约 `exports.plugin` → `exports.component`（无别名），零语义变化。
   本项目全库跟随（分支 feature/component）。Rust 侧命名决策：方法取
   名词 `ctx.component`（`use` 是 Rust 关键字，弃 TS 动词取名词）；crate
-  随名 `cordis-component-api`；导出符号 `cordis_component_*` 且
+  随名 `yacordis-component-api`；导出符号 `cordis_component_*` 且
   `ABI_VERSION` 升 3；仓库索引键 `"plugins"` → `"components"`；项目未
   发布，不留弃用别名。事件名 `internal/plugin` 上游改名后仍保留，两侧
   一致不动。另三项同日提交均 N/A：#303（package-manager 的 pnpm/yarn

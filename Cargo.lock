@@ -31,61 +31,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
-name = "cordis"
-version = "0.1.0"
-dependencies = [
- "cordis-macros",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "cordis-component-api"
-version = "0.1.0"
-dependencies = [
- "serde_json",
-]
-
-[[package]]
-name = "cordis-loader"
-version = "0.1.0"
-dependencies = [
- "cordis",
- "cordis-component-api",
- "libloading",
- "serde",
- "serde_json",
- "ureq",
-]
-
-[[package]]
-name = "cordis-logger"
-version = "0.1.0"
-dependencies = [
- "cordis",
- "serde_json",
-]
-
-[[package]]
-name = "cordis-macros"
-version = "0.1.0"
-dependencies = [
- "cordis",
- "proc-macro2",
- "quote",
- "serde_json",
- "syn 2.0.119",
-]
-
-[[package]]
-name = "cordis-timer"
-version = "0.1.0"
-dependencies = [
- "cordis",
- "serde_json",
-]
-
-[[package]]
 name = "crc32fast"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -654,6 +599,61 @@ name = "writeable"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
+
+[[package]]
+name = "yacordis"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "yacordis-macros",
+]
+
+[[package]]
+name = "yacordis-component-api"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
+name = "yacordis-loader"
+version = "0.1.0"
+dependencies = [
+ "libloading",
+ "serde",
+ "serde_json",
+ "ureq",
+ "yacordis",
+ "yacordis-component-api",
+]
+
+[[package]]
+name = "yacordis-logger"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "yacordis",
+]
+
+[[package]]
+name = "yacordis-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde_json",
+ "syn 2.0.119",
+ "yacordis",
+]
+
+[[package]]
+name = "yacordis-timer"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "yacordis",
+]
 
 [[package]]
 name = "yoke"

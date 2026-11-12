@@ -1,0 +1,22 @@
+[package]
+name = "yacordis-loader"
+description = "Runtime installer for yacordis components distributed as prebuilt cdylib binaries"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+yacordis = { workspace = true }
+yacordis-component-api = { workspace = true }
+libloading = "0.8"
+serde_json = { workspace = true }
+
+# Optional: install components straight from a URL.
+ureq = { version = "2", optional = true }
+
+[features]
+download = ["dep:ureq"]
+
+[dev-dependencies]
+serde = { workspace = true }

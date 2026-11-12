@@ -1,0 +1,11 @@
+[package]
+name = "yacordis-logger"
+description = "Leveled logging service with pluggable sinks for yacordis"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+yacordis = { workspace = true }
+serde_json = { workspace = true }

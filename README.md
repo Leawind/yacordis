@@ -1,11 +1,11 @@
-# cordis-rust
+# yacordis
 
 [Cordis](https://github.com/cordiverse/cordis) 的 Rust 实现——时空可组合
 （spatiotemporal composability）组件框架，概念蓝本为论文
 [arXiv:2608.25512](https://arxiv.org/abs/2608.25512) 及其参考实现 cordis v4。
 
 ```rust
-use cordis::prelude::*;
+use yacordis::prelude::*;
 
 let ctx = Context::new();
 
@@ -36,19 +36,20 @@ ctx.component(DatabaseComponent, ...)?; // app -> Active，进程内热生效
 
 | crate | 状态 | 说明 |
 |---|---|---|
-| `cordis` | ✅ M1 | 核心：Context / Fiber / Effect / 事件 / 服务 / isolate / 依赖环诊断 |
-| `cordis-component-api` | ✅ M2 | 组件侧稳定 C ABI（v3）：Component trait + `register_component!` + `run_blocking` |
-| `cordis-loader` | ✅ M2 | 运行时安装 cdylib 二进制组件（文件 / cargo 构建 / URL 下载）+ 仓库索引 + 卸载契约 lint |
-| `cordis-timer` | ✅ M3 | 后台定时轮：setTimeout/setInterval/sleep，随作用域自动取消 |
-| `cordis-logger` | ✅ M3 | 分级日志服务 + 可插拔 sink，按组件 scope 归属 |
-| `cordis-macros` | ✅ | `#[component]` 属性宏：普通函数 + 声明 → Component 适配器 |
+| `yacordis` | ✅ M1 | 核心：Context / Fiber / Effect / 事件 / 服务 / isolate / 依赖环诊断 |
+| `yacordis-component-api` | ✅ M2 | 组件侧稳定 C ABI（v4）：Component trait + `register_component!` + `run_blocking` |
+| `yacordis-loader` | ✅ M2 | 运行时安装 cdylib 二进制组件（文件 / cargo 构建 / URL 下载）+ 仓库索引 + 卸载契约 lint |
+| `yacordis-timer` | ✅ M3 | 后台定时轮：setTimeout/setInterval/sleep，随作用域自动取消 |
+| `yacordis-logger` | ✅ M3 | 分级日志服务 + 可插拔 sink，按组件 scope 归属 |
+| `yacordis-macros` | ✅ | `#[component]` 属性宏：普通函数 + 声明 → Component 适配器 |
 
 核心能力之外的里程碑全部落地：框架中介并发（`run_blocking`/
 `spawn_future`，排空先于回滚）、`replace_component` 原位热替换、配置
 schema 校验（resolveConfig 等价默认值）、组件仓库索引（semver +
 sha-256）、卸载限制契约机械化（ast-grep lint + dispose 审计）——
 见 `docs/design.md` §6。范式验证见孤儿分支 `orphan/dsh-demo`
-（dsh-like agent harness，工作树 `../dsh-demo`）。
+（dsh-like agent harness，工作树 `../dsh-demo`）；在其上完整复刻 dsh
+的应用层是孤儿分支 `orphan/rdsh`（工作树 `../rdsh`）。
 
 设计细节与 TS 版分歧清单、上游 issue 对照见
 [docs/design.md](docs/design.md)（§3、§7）。
@@ -56,5 +57,5 @@ sha-256）、卸载限制契约机械化（ast-grep lint + dispose 审计）—�
 
 ```sh
 cargo test                          # 验收测试
-cargo run -p cordis --example lifecycle
+cargo run -p yacordis --example lifecycle
 ```

@@ -1,0 +1,13 @@
+id: yacordis-no-tokio-scheduling
+language: Rust
+severity: error
+message: >
+  Component-owned tokio runtimes are a second scheduling domain the framework
+  cannot quiesce (§4.1 I1). Use the framework concurrency API, or register
+  an internal runtime as an effect and marshal results through completion
+  callbacks.
+rule:
+  any:
+    - pattern: tokio::spawn($$$ARGS)
+    - pattern: tokio::runtime::Builder$$$REST
+    - pattern: tokio::runtime::Runtime::new()

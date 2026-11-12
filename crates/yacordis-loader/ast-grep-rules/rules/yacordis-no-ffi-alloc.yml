@@ -1,0 +1,10 @@
+id: yacordis-no-ffi-alloc
+language: Rust
+severity: error
+message: >
+  Manual allocation across the C ABI breaks the shared-allocator rule (§4).
+  Allocate buffers through yacordis_component_api (alloc_buffer/free_buffer).
+rule:
+  any:
+    - pattern: libc::malloc($$$ARGS)
+    - pattern: libc::free($$$ARGS)

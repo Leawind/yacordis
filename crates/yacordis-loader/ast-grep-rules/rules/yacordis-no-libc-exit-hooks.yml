@@ -1,0 +1,10 @@
+id: yacordis-no-libc-exit-hooks
+language: Rust
+severity: error
+message: >
+  atexit/TLS destructor hooks run outside the framework's drain phase
+  (§4.1 I2). Register cleanup through ctx.effect so unload provably reverts it.
+rule:
+  any:
+    - pattern: libc::atexit($$$ARGS)
+    - pattern: std::process::exit($$$ARGS)
