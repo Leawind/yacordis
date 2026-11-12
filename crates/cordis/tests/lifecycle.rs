@@ -42,9 +42,9 @@ fn dynamic_install_uninstall_reverts_in_reverse_order() {
     let ctx = Context::new();
     let log: Log = Arc::default();
 
-    let plugin = {
+    let component = {
         let log = log.clone();
-        move |ctx: &Context, _config: &Value| -> PluginResult {
+        move |ctx: &Context, _config: &Value| -> ComponentResult {
             let log = log.clone();
             ctx.effect("effect/a", {
                 let log = log.clone();
@@ -66,7 +66,7 @@ fn dynamic_install_uninstall_reverts_in_reverse_order() {
         }
     };
 
-    let handle = ctx.plugin(plugin, json!(null)).expect("install");
+    let handle = ctx.component(component, json!(null)).expect("install");
     assert!(handle.is_active());
     assert_eq!(logged(&log), ["a:setup", "b:setup"]);
 
@@ -137,7 +137,7 @@ fn dependents_follow_their_provider_through_install_cycles() {
 
     let provider = {
         let log = log.clone();
-        move |ctx: &Context, config: &Value| -> PluginResult {
+        move |ctx: &Context, config: &Value| -> ComponentResult {
             let uri = config["uri"].as_str().unwrap_or_default().to_owned();
             let log = log.clone();
             ctx.effect("provider/tracker", move |_| {
@@ -151,15 +151,15 @@ fn dependents_follow_their_provider_through_install_cycles() {
     };
 
     // A consumer that *declares* its dependency (reactive coeffect).
-    struct ConsumerPlugin(Log);
-    impl Plugin for ConsumerPlugin {
+    struct ConsumerComponent(Log);
+    impl Component for ConsumerComponent {
         fn name(&self) -> Option<&str> {
             Some("consumer")
         }
         fn inject(&self) -> Inject {
             Inject::required(&["database"])
         }
-        fn apply(&self, ctx: &Context, _config: &Value) -> PluginResult {
+        fn apply(&self, ctx: &Context, _config: &Value) -> ComponentResult {
             let db = ctx
                 .get::<Database>("database")
                 .expect("required dependency visible");
@@ -175,15 +175,15 @@ fn dependents_follow_their_provider_through_install_cycles() {
 
     // Consumer installed first: stays pending, body unexecuted.
     let consumer_fiber = ctx
-        .plugin_dyn(Arc::new(ConsumerPlugin(log.clone())), json!(null))
+        .component_dyn(Arc::new(ConsumerComponent(log.clone())), json!(null))
         .expect("install consumer");
     assert_eq!(consumer_fiber.state(), FiberState::Pending);
     assert!(logged(&log).is_empty());
 
     // Provider arrives: the consumer activates reactively.
-    let provider_arc = Arc::new(provider.clone()) as Arc<dyn Plugin>;
+    let provider_arc = Arc::new(provider.clone()) as Arc<dyn Component>;
     let provider_fiber = ctx
-        .plugin_dyn(provider_arc, json!({"uri": "pg://x"}))
+        .component_dyn(provider_arc, json!({"uri": "pg://x"}))
         .expect("install provider");
     assert!(provider_fiber.is_active());
     assert!(consumer_fiber.is_active());
@@ -204,8 +204,8 @@ fn dependents_follow_their_provider_through_install_cycles() {
 
     // Provider returns (fresh install): the consumer reloads.
     let again = ctx
-        .plugin_dyn(
-            Arc::new(provider.clone()) as Arc<dyn Plugin>,
+        .component_dyn(
+            Arc::new(provider.clone()) as Arc<dyn Component>,
             json!({"uri": "pg://y"}),
         )
         .expect("reinstall provider");
@@ -225,19 +225,19 @@ fn optional_dependencies_do_not_block() {
     let ctx = Context::new();
 
     struct Assets;
-    let with_optional = |ctx: &Context, _config: &Value| -> PluginResult {
+    let with_optional = |ctx: &Context, _config: &Value| -> ComponentResult {
         assert!(!ctx.has("assets"), "optional service absent at activation");
         ctx.effect("probe", |_| Ok(()))?;
         Ok(())
     };
-    let handle = ctx.plugin(with_optional, json!(null)).expect("install");
+    let handle = ctx.component(with_optional, json!(null)).expect("install");
     assert!(handle.is_active());
 
     // An optional provider appearing later does not reload the fiber but
     // becomes visible through the global store.
     let provider = ctx
-        .plugin(
-            |ctx: &Context, _cfg: &Value| -> PluginResult {
+        .component(
+            |ctx: &Context, _cfg: &Value| -> ComponentResult {
                 ctx.provide("assets", Arc::new(Assets))?;
                 Ok(())
             },
@@ -275,8 +275,8 @@ fn service_access_channels_and_set_rules() {
 
     // set() from another fiber is rejected.
     let other = ctx
-        .plugin(
-            |ctx: &Context, _cfg: &Value| -> PluginResult {
+        .component(
+            |ctx: &Context, _cfg: &Value| -> ComponentResult {
                 let result = ctx.set("root-svc", Arc::new(0_u32));
                 assert!(matches!(result, Err(CordisError::ForeignService { .. })));
                 Ok(())
@@ -288,8 +288,8 @@ fn service_access_channels_and_set_rules() {
 
     // Duplicate provide is a conflict.
     let dupe = ctx
-        .plugin(
-            |ctx: &Context, _cfg: &Value| -> PluginResult {
+        .component(
+            |ctx: &Context, _cfg: &Value| -> ComponentResult {
                 ctx.provide_raw("root-svc", Arc::new(1_u32))?;
                 Ok(())
             },
@@ -380,8 +380,8 @@ fn registering_on_a_disposed_fiber_fails() {
     let slot2 = slot.clone();
 
     let fiber = ctx
-        .plugin(
-            move |ctx: &Context, _cfg: &Value| -> PluginResult {
+        .component(
+            move |ctx: &Context, _cfg: &Value| -> ComponentResult {
                 *slot2.lock().unwrap() = Some(ctx.clone());
                 Ok(())
             },
@@ -400,8 +400,8 @@ fn registering_on_a_disposed_fiber_fails() {
         Err(CordisError::InactiveContext { .. })
     ));
     assert!(matches!(
-        stale_ctx.plugin(
-            |_: &Context, _: &Value| -> PluginResult { Ok(()) },
+        stale_ctx.component(
+            |_: &Context, _: &Value| -> ComponentResult { Ok(()) },
             json!(null)
         ),
         Err(CordisError::InactiveContext { .. })
@@ -424,9 +424,9 @@ fn update_restarts_and_clears_failures() {
     // Fails unless config has a "url".
     let broker = {
         let log = log.clone();
-        move |ctx: &Context, config: &Value| -> PluginResult {
+        move |ctx: &Context, config: &Value| -> ComponentResult {
             let url = config["url"].as_str().ok_or_else(|| {
-                PluginError::new(std::io::Error::new(
+                ComponentError::new(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     "missing url",
                 ))
@@ -448,7 +448,7 @@ fn update_restarts_and_clears_failures() {
     };
 
     let fiber = ctx
-        .plugin(broker, json!({"nope": true}))
+        .component(broker, json!({"nope": true}))
         .expect("install returns handle");
     assert_eq!(fiber.state(), FiberState::Failed);
     assert!(fiber.error().is_some());
@@ -483,7 +483,7 @@ fn update_restarts_and_clears_failures() {
 }
 
 // ---------------------------------------------------------------------
-// 8. Multiple instances of one plugin are independent
+// 8. Multiple instances of one component are independent
 // ---------------------------------------------------------------------
 
 #[test]
@@ -494,7 +494,7 @@ fn multiple_instances_are_independent() {
         #[allow(dead_code)]
         id: u32,
     }
-    let worker = |ctx: &Context, config: &Value| -> PluginResult {
+    let worker = |ctx: &Context, config: &Value| -> ComponentResult {
         ctx.provide(
             "worker",
             Arc::new(Worker {
@@ -504,9 +504,9 @@ fn multiple_instances_are_independent() {
         Ok(())
     };
 
-    let a = ctx.plugin(worker, json!({"id": 1})).expect("a");
-    // Same plugin logic, fresh install.
-    let worker2 = |ctx: &Context, config: &Value| -> PluginResult {
+    let a = ctx.component(worker, json!({"id": 1})).expect("a");
+    // Same component logic, fresh install.
+    let worker2 = |ctx: &Context, config: &Value| -> ComponentResult {
         ctx.provide(
             "worker2",
             Arc::new(Worker {
@@ -515,7 +515,7 @@ fn multiple_instances_are_independent() {
         )?;
         Ok(())
     };
-    let _ = ctx.plugin(worker2, json!({"id": 2})).expect("b");
+    let _ = ctx.component(worker2, json!({"id": 2})).expect("b");
 
     assert!(a.is_active());
     a.dispose();
@@ -549,20 +549,20 @@ fn inject_sugar_gates_on_dependencies() {
 }
 
 // ---------------------------------------------------------------------
-// 10. Re-entrancy: plugins install/plugins and listeners mutate state
+// 10. Re-entrancy: components install/components and listeners mutate state
 // ---------------------------------------------------------------------
 
 #[test]
 fn reentrant_registration_from_listeners_and_bodies() {
     let ctx = Context::new();
 
-    // A listener that installs a plugin, which provides a service and
+    // A listener that installs a component, which provides a service and
     // registers another listener, which provides another service.
     let installer = ctx
         .on("boot", |ctx: &Context, _| {
             let inner = ctx
-                .plugin(
-                    |ctx: &Context, _cfg: &Value| -> PluginResult {
+                .component(
+                    |ctx: &Context, _cfg: &Value| -> ComponentResult {
                         ctx.provide("inner-svc", Arc::new("inner".to_owned()))?;
                         ctx.on("inner-evt", |_, _| Some(json!("inner-listener")))?;
                         Ok(())
@@ -582,21 +582,21 @@ fn reentrant_registration_from_listeners_and_bodies() {
         Some(json!("inner-listener"))
     );
 
-    // Dispose the listener handle: the installed plugin keeps living
+    // Dispose the listener handle: the installed component keeps living
     // (it was a normal install, not an effect of the listener).
     installer.dispose();
     ctx.emit("boot", &Value::Null);
     assert!(ctx.has("inner-svc"));
 
-    // A plugin body installing a child plugin: child dies with parent.
+    // A component body installing a child component: child dies with parent.
     let child_gone: Arc<Mutex<bool>> = Arc::default();
     let child_gone2 = child_gone.clone();
     let parent = ctx
-        .plugin(
-            move |ctx: &Context, _cfg: &Value| -> PluginResult {
+        .component(
+            move |ctx: &Context, _cfg: &Value| -> ComponentResult {
                 let gone = child_gone2.clone();
-                ctx.plugin(
-                    move |ctx: &Context, _cfg: &Value| -> PluginResult {
+                ctx.component(
+                    move |ctx: &Context, _cfg: &Value| -> ComponentResult {
                         let gone = gone.clone();
                         ctx.effect("child-effect", move |_| {
                             let d: Disposer = Box::new(move || {
@@ -661,8 +661,8 @@ fn internal_events_report_lifecycle() {
 
     struct S;
     let svc = ctx
-        .plugin(
-            |ctx: &Context, _cfg: &Value| -> PluginResult {
+        .component(
+            |ctx: &Context, _cfg: &Value| -> ComponentResult {
                 ctx.provide("svc", Arc::new(S))?;
                 Ok(())
             },
@@ -691,16 +691,16 @@ fn internal_events_report_lifecycle() {
 }
 
 // ---------------------------------------------------------------------
-// 12. Panicking plugins fail their fiber instead of the host
+// 12. Panicking components fail their fiber instead of the host
 // ---------------------------------------------------------------------
 
 #[test]
-fn panicking_plugin_becomes_failed_fiber() {
+fn panicking_component_becomes_failed_fiber() {
     let ctx = Context::new();
 
     let fiber = ctx
-        .plugin(
-            |ctx: &Context, _cfg: &Value| -> PluginResult {
+        .component(
+            |ctx: &Context, _cfg: &Value| -> ComponentResult {
                 ctx.effect("halfway", |_| Ok(()))?; // must be rolled back
                 panic!("boom");
             },
@@ -710,10 +710,10 @@ fn panicking_plugin_becomes_failed_fiber() {
     assert_eq!(fiber.state(), FiberState::Failed);
     assert!(fiber.error().expect("error message").contains("boom"));
 
-    // The runtime stays healthy: new plugins install fine.
+    // The runtime stays healthy: new components install fine.
     let ok = ctx
-        .plugin(
-            |_: &Context, _: &Value| -> PluginResult { Ok(()) },
+        .component(
+            |_: &Context, _: &Value| -> ComponentResult { Ok(()) },
             json!(null),
         )
         .expect("install after panic");
@@ -773,9 +773,9 @@ fn disposal_is_reverse_registration_across_effect_batches() {
     let ctx = Context::new();
     let log: Log = Arc::default();
 
-    let plugin = {
+    let component = {
         let log = log.clone();
-        move |ctx: &Context, _config: &Value| -> PluginResult {
+        move |ctx: &Context, _config: &Value| -> ComponentResult {
             let own = ctx.clone();
             ctx.effect("body/a", {
                 let log = log.clone();
@@ -806,7 +806,7 @@ fn disposal_is_reverse_registration_across_effect_batches() {
         }
     };
 
-    let handle = ctx.plugin(plugin, json!(null)).expect("install");
+    let handle = ctx.component(component, json!(null)).expect("install");
     assert!(handle.is_active());
 
     // Fire after the body: `b` joins a fresh batch, registered after

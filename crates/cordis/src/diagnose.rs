@@ -1,10 +1,10 @@
 //! Dependency-cycle diagnostics — the counterpart of cordis v4 issue
-//! #66 ("detect circular plugin dependencies"), which upstream leaves
+//! #66 ("detect circular component dependencies"), which upstream leaves
 //! open: a cycle there pends forever, silently.
 //!
 //! A pending fiber waits for each missing required dependency. A missing
 //! dependency is *claimable* when some installed fiber declares it in
-//! [`Plugin::provides`](crate::Plugin::provides). When the claim edges
+//! [`Component::provides`](crate::Component::provides). When the claim edges
 //! close a loop, none of the members can ever activate: each one's body
 //! (the thing that actually provides) cannot run until the loop is
 //! broken from outside. We report such groups once per shape, and expose
@@ -25,7 +25,7 @@ use crate::logger::LogLevel;
 
 /// Groups of installed fibers that mutually wait for each other's
 /// declared provides. Each group is a list of `name#id` labels (sorted);
-/// empty unless `Plugin::provides` declarations close a loop among
+/// empty unless `Component::provides` declarations close a loop among
 /// pending fibers.
 pub(crate) fn dependency_cycles(core: &Arc<Core>) -> Vec<Vec<String>> {
     let fibers = {
@@ -33,7 +33,7 @@ pub(crate) fn dependency_cycles(core: &Arc<Core>) -> Vec<Vec<String>> {
         registry.all_fibers()
     };
 
-    // Service name → fibers claiming it in `Plugin::provides`.
+    // Service name → fibers claiming it in `Component::provides`.
     let mut claims: HashMap<String, Vec<usize>> = HashMap::new();
     for (i, fiber) in fibers.iter().enumerate() {
         for name in fiber.declared_provides() {

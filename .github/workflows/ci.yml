@@ -25,7 +25,7 @@ jobs:
   windows:
     # The loader builds a cdylib fixture with cargo; the FFI and
     # shared-allocator assumptions are worth exercising off-linux too.
-    # (Plugins themselves must not be built with a static CRT — see
+    # (Components themselves must not be built with a static CRT — see
     # docs/design.md.)
     name: test (windows)
     runs-on: windows-latest

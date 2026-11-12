@@ -7,8 +7,8 @@ use cordis::prelude::*;
 use serde_json::{Value, json};
 
 /// A provider whose service value is `{"uri": <config>}`.
-fn provider(uri: &'static str) -> Arc<dyn Plugin> {
-    Arc::new(move |ctx: &Context, _config: &Value| -> PluginResult {
+fn provider(uri: &'static str) -> Arc<dyn Component> {
+    Arc::new(move |ctx: &Context, _config: &Value| -> ComponentResult {
         ctx.provide("database", Arc::new(json!({ "uri": uri })))?;
         Ok(())
     })
@@ -21,7 +21,7 @@ fn isolated_subtrees_get_their_own_service_instances() {
 
     // The runtime-wide database.
     let global_db = ctx
-        .plugin_dyn(provider("global"), json!(null))
+        .component_dyn(provider("global"), json!(null))
         .expect("global");
     assert!(global_db.is_active());
     assert_eq!(
@@ -32,7 +32,7 @@ fn isolated_subtrees_get_their_own_service_instances() {
     // An isolated subtree installs its own database: coexists, no conflict.
     let isolated = ctx.isolate("database");
     let local_db = isolated
-        .plugin_dyn(provider("local"), json!(null))
+        .component_dyn(provider("local"), json!(null))
         .expect("local");
     assert!(local_db.is_active());
 
@@ -86,7 +86,7 @@ fn notify_never_crosses_isolation_groups() {
 
     // Installing a database in subtree A activates only A's consumer.
     let db_a = subtree_a
-        .plugin_dyn(provider("a"), json!(null))
+        .component_dyn(provider("a"), json!(null))
         .expect("db a");
     assert!(consumer_a.is_active());
     assert_eq!(
@@ -101,7 +101,7 @@ fn notify_never_crosses_isolation_groups() {
 
     // B gets its own; A stays down.
     let db_b = subtree_b
-        .plugin_dyn(provider("b"), json!(null))
+        .component_dyn(provider("b"), json!(null))
         .expect("db b");
     assert!(consumer_b.is_active());
     assert_eq!(consumer_a.state(), FiberState::Pending);
@@ -113,19 +113,21 @@ fn conflicts_apply_within_one_isolation_group() {
     let ctx = Context::new();
     ctx.set_logger(Arc::new(cordis::DiscardLogger));
 
-    let first = ctx.plugin_dyn(provider("one"), json!(null)).expect("first");
+    let first = ctx
+        .component_dyn(provider("one"), json!(null))
+        .expect("first");
     assert!(first.is_active());
 
     // Same name, same (default) isolation group: the second install fails.
     let second = ctx
-        .plugin_dyn(provider("two"), json!(null))
+        .component_dyn(provider("two"), json!(null))
         .expect("handle");
     assert_eq!(second.state(), FiberState::Failed);
 
     // A derived isolate is a different group: it works there.
     let isolated = ctx.isolate("database");
     let third = isolated
-        .plugin_dyn(provider("three"), json!(null))
+        .component_dyn(provider("three"), json!(null))
         .expect("third");
     assert!(third.is_active());
     assert_eq!(
@@ -136,7 +138,7 @@ fn conflicts_apply_within_one_isolation_group() {
 
 #[test]
 fn isolation_composes_with_the_ffi_channel() {
-    // The loader's handle table stores whole Contexts, so a plugin
+    // The loader's handle table stores whole Contexts, so a component
     // installed through an isolated context resolves services with the
     // isolated labels. Covered here at the handle level (no dylib): the
     // context the loader would hand over is the isolated one.
@@ -144,18 +146,18 @@ fn isolation_composes_with_the_ffi_channel() {
     ctx.set_logger(Arc::new(cordis::DiscardLogger));
     let isolated = ctx.isolate("database");
 
-    let plugin_ctx = isolated.clone();
+    let component_ctx = isolated.clone();
     let consumer = isolated
         .inject(Inject::required(&["database"]), move |_: &Context| {
-            // The loader passes the *installation* context into plugin
+            // The loader passes the *installation* context into component
             // bodies; assert the same scoping applies there.
-            let _ = &plugin_ctx;
+            let _ = &component_ctx;
             Ok(())
         })
         .expect("consumer");
 
     let handle = isolated
-        .plugin_dyn(provider("isolated"), json!(null))
+        .component_dyn(provider("isolated"), json!(null))
         .expect("install");
     assert!(consumer.is_active());
     assert!(isolated.get_raw("database").is_some());

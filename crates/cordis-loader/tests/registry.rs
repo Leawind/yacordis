@@ -60,11 +60,11 @@ fn version_constraints_match_and_gate() {
 #[test]
 fn resolve_picks_the_highest_matching_version() {
     let index = RegistryIndex::from_json(&json!({
-        "plugins": {
+        "components": {
             "greeter": [
-                { "version": "1.0.0", "artifact": "a.cdylib", "sha256": "x", "abi": 2 },
-                { "version": "1.4.2", "artifact": "b.cdylib", "sha256": "y", "abi": 2 },
-                { "version": "2.0.0", "artifact": "c.cdylib", "sha256": "z", "abi": 2 }
+                { "version": "1.0.0", "artifact": "a.cdylib", "sha256": "x", "abi": 3 },
+                { "version": "1.4.2", "artifact": "b.cdylib", "sha256": "y", "abi": 3 },
+                { "version": "2.0.0", "artifact": "c.cdylib", "sha256": "z", "abi": 3 }
             ]
         }
     }))
@@ -75,12 +75,16 @@ fn resolve_picks_the_highest_matching_version() {
         .expect("resolved");
     assert_eq!(entry.version, Version::parse("1.4.2").unwrap());
 
-    assert!(index
-        .resolve("greeter", &Constraint::parse("^3.0").expect("constraint"))
-        .is_err());
-    assert!(index
-        .resolve("missing", &Constraint::parse("*").expect("constraint"))
-        .is_err());
+    assert!(
+        index
+            .resolve("greeter", &Constraint::parse("^3.0").expect("constraint"))
+            .is_err()
+    );
+    assert!(
+        index
+            .resolve("missing", &Constraint::parse("*").expect("constraint"))
+            .is_err()
+    );
 }
 
 #[test]
@@ -91,17 +95,17 @@ fn install_verifies_checksum_and_abi_then_loads() {
     let digest = sha256_hex(&bytes);
 
     let index = RegistryIndex::from_json(&json!({
-        "plugins": {
+        "components": {
             "demo-greeter": [
                 { "version": "1.0.0", "artifact": fixture_cdylib.to_str().unwrap(),
-                  "sha256": digest, "abi": 2 }
+                  "sha256": digest, "abi": 3 }
             ]
         }
     }))
     .expect("index");
 
     let repo = Repository::new("https://registry.invalid/v1", temp_cache_dir("registry-ok"));
-    let plugin = repo
+    let component = repo
         .install(
             &index,
             "demo-greeter",
@@ -109,14 +113,14 @@ fn install_verifies_checksum_and_abi_then_loads() {
             &Sha256Verifier,
         )
         .expect("install");
-    assert_eq!(plugin.manifest.name.as_deref(), Some("demo-greeter"));
+    assert_eq!(component.manifest.name.as_deref(), Some("demo-greeter"));
 
     // Corrupted checksum is rejected before any code is mapped.
     let bad_index = RegistryIndex::from_json(&json!({
-        "plugins": {
+        "components": {
             "demo-greeter": [
                 { "version": "1.0.0", "artifact": fixture_cdylib.to_str().unwrap(),
-                  "sha256": "0".repeat(64), "abi": 2 }
+                  "sha256": "0".repeat(64), "abi": 3 }
             ]
         }
     }))
@@ -134,7 +138,7 @@ fn install_verifies_checksum_and_abi_then_loads() {
 
     // Wrong ABI is rejected.
     let abi_index = RegistryIndex::from_json(&json!({
-        "plugins": {
+        "components": {
             "demo-greeter": [
                 { "version": "1.0.0", "artifact": fixture_cdylib.to_str().unwrap(),
                   "sha256": digest, "abi": 999 }
@@ -155,7 +159,7 @@ fn install_verifies_checksum_and_abi_then_loads() {
 }
 
 fn build_fixture() -> PathBuf {
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/demo-plugin");
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/demo-component");
     let options = BuildOptions {
         offline: true,
         lint: false,

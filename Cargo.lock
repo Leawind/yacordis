@@ -40,11 +40,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "cordis-component-api"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "cordis-loader"
 version = "0.1.0"
 dependencies = [
  "cordis",
- "cordis-plugin-api",
+ "cordis-component-api",
  "libloading",
  "serde",
  "serde_json",
@@ -68,13 +75,6 @@ dependencies = [
  "quote",
  "serde_json",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "cordis-plugin-api"
-version = "0.1.0"
-dependencies = [
- "serde_json",
 ]
 
 [[package]]

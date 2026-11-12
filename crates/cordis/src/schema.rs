@@ -1,9 +1,9 @@
 //! Config schemas: the Standard-Schema-equivalent validation layer.
 //!
-//! A [`Schema`] describes the config a plugin accepts, validates a
+//! A [`Schema`] describes the config a component accepts, validates a
 //! [`Value`](serde_json::Value) against it, and — like v4's
 //! `resolveConfig` — resolves the config by filling declared defaults.
-//! Validation runs before the plugin body on install and update; a
+//! Validation runs before the component body on install and update; a
 //! rejected config leaves the fiber with no side effects (`Failed` /
 //! update error).
 //!
@@ -80,7 +80,7 @@ pub struct Schema {
 }
 
 impl Schema {
-    /// Accepts any config (the default for plugins without a schema).
+    /// Accepts any config (the default for components without a schema).
     pub fn any() -> Self {
         Self::of(Node::Any)
     }
@@ -234,12 +234,7 @@ impl SchemaBuilder {
     /// Declare an optional field with a default filled in by
     /// [`Schema::resolve`].
     #[must_use]
-    pub fn opt_default(
-        mut self,
-        name: impl Into<String>,
-        schema: Schema,
-        default: Value,
-    ) -> Self {
+    pub fn opt_default(mut self, name: impl Into<String>, schema: Schema, default: Value) -> Self {
         self.fields.push(Field {
             name: name.into(),
             schema,
@@ -275,25 +270,38 @@ fn check(schema: &Schema, value: &Value, path: &str, out: &mut Vec<Diagnostic>) 
     match (schema.node.as_ref(), value) {
         (Node::Any, _) => {}
         (Node::Bool, Value::Bool(_)) => {}
-        (Node::Bool, other) => {
-            report(out, format!("expected a boolean, found {kind}", kind = kind(other)))
-        }
+        (Node::Bool, other) => report(
+            out,
+            format!("expected a boolean, found {kind}", kind = kind(other)),
+        ),
         (Node::String(checks), Value::String(text)) => {
             let len = text.chars().count();
             if let Some(min) = checks.min_len {
                 if len < min {
-                    report(out, format!("expected at least {min} characters, found {len}"));
+                    report(
+                        out,
+                        format!("expected at least {min} characters, found {len}"),
+                    );
                 }
             }
             if let Some(max) = checks.max_len {
                 if len > max {
-                    report(out, format!("expected at most {max} characters, found {len}"));
+                    report(
+                        out,
+                        format!("expected at most {max} characters, found {len}"),
+                    );
                 }
             }
         }
-        (Node::String(_), other) => report(out, format!("expected a string, found {kind}", kind = kind(other))),
+        (Node::String(_), other) => report(
+            out,
+            format!("expected a string, found {kind}", kind = kind(other)),
+        ),
         (Node::Number(checks), Value::Number(n)) => check_range(checks, n.as_f64(), path, out),
-        (Node::Number(_), other) => report(out, format!("expected a number, found {kind}", kind = kind(other))),
+        (Node::Number(_), other) => report(
+            out,
+            format!("expected a number, found {kind}", kind = kind(other)),
+        ),
         (Node::Integer(checks), Value::Number(n)) => {
             if n.as_f64().map(|f| f.fract() != 0.0).unwrap_or(true) {
                 report(out, format!("expected an integer, found {n}"));
@@ -301,7 +309,10 @@ fn check(schema: &Schema, value: &Value, path: &str, out: &mut Vec<Diagnostic>) 
                 check_range(checks, n.as_f64(), path, out);
             }
         }
-        (Node::Integer(_), other) => report(out, format!("expected an integer, found {kind}", kind = kind(other))),
+        (Node::Integer(_), other) => report(
+            out,
+            format!("expected an integer, found {kind}", kind = kind(other)),
+        ),
         (Node::Enum(values), other) => {
             if !values.iter().any(|v| v == other) {
                 report(
@@ -313,19 +324,28 @@ fn check(schema: &Schema, value: &Value, path: &str, out: &mut Vec<Diagnostic>) 
         (Node::Array { item, min, max }, Value::Array(items)) => {
             if let Some(min) = min {
                 if items.len() < *min {
-                    report(out, format!("expected at least {min} items, found {}", items.len()));
+                    report(
+                        out,
+                        format!("expected at least {min} items, found {}", items.len()),
+                    );
                 }
             }
             if let Some(max) = max {
                 if items.len() > *max {
-                    report(out, format!("expected at most {max} items, found {}", items.len()));
+                    report(
+                        out,
+                        format!("expected at most {max} items, found {}", items.len()),
+                    );
                 }
             }
             for (index, element) in items.iter().enumerate() {
                 check(item, element, &join(path, &index.to_string()), out);
             }
         }
-        (Node::Array { .. }, other) => report(out, format!("expected an array, found {kind}", kind = kind(other))),
+        (Node::Array { .. }, other) => report(
+            out,
+            format!("expected an array, found {kind}", kind = kind(other)),
+        ),
         (
             Node::Object {
                 fields,
@@ -337,10 +357,7 @@ fn check(schema: &Schema, value: &Value, path: &str, out: &mut Vec<Diagnostic>) 
                 match map.get(&field.name) {
                     Some(Value::Null) | None => {
                         if field.required {
-                            report(
-                                out,
-                                format!("missing required field `{}`", field.name),
-                            );
+                            report(out, format!("missing required field `{}`", field.name));
                         }
                     }
                     Some(present) => {
@@ -353,15 +370,24 @@ fn check(schema: &Schema, value: &Value, path: &str, out: &mut Vec<Diagnostic>) 
                     if !fields.iter().any(|field| &field.name == key) {
                         report(
                             out,
-                            format!("unknown field `{key}`; expected one of [{}]", listed(
-                                &fields.iter().map(|f| Value::String(f.name.clone())).collect::<Vec<_>>()
-                            )),
+                            format!(
+                                "unknown field `{key}`; expected one of [{}]",
+                                listed(
+                                    &fields
+                                        .iter()
+                                        .map(|f| Value::String(f.name.clone()))
+                                        .collect::<Vec<_>>()
+                                )
+                            ),
                         );
                     }
                 }
             }
         }
-        (Node::Object { .. }, other) => report(out, format!("expected an object, found {kind}", kind = kind(other))),
+        (Node::Object { .. }, other) => report(
+            out,
+            format!("expected an object, found {kind}", kind = kind(other)),
+        ),
     }
 }
 

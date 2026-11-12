@@ -1,4 +1,4 @@
-//! [`Callback`] constructors: erase plugin closures into C-ABI
+//! [`Callback`] constructors: erase component closures into C-ABI
 //! function-pointer bundles the host can invoke (and drop) later.
 //!
 //! Every trampoline catches panics (`-1`), frees the `args` buffer the
@@ -17,7 +17,7 @@ use crate::abi::{CODE_PANIC, CODE_REUSED, Callback, HostVTable, RawBuffer, RawCa
 use crate::buffer;
 use crate::context::Context;
 
-/// A cleanup function the plugin hands to the host; runs when the
+/// A cleanup function the component hands to the host; runs when the
 /// surrounding effect or fiber is reverted.
 pub struct Disposable(Callback);
 
@@ -96,7 +96,7 @@ fn write_error_message(out: *mut RawBuffer, message: &str) {
 }
 
 /// Free the `args` buffer the host handed to us. Boundary buffers use
-/// the shared `malloc`/`free`, so freeing from the plugin side is always
+/// the shared `malloc`/`free`, so freeing from the component side is always
 /// correct regardless of allocator.
 fn release_args(args: RawBuffer) {
     buffer::free_buffer(args);
@@ -120,7 +120,7 @@ impl Callback {
         erase(f, listener_trampoline::<F>)
     }
 
-    /// Erase a plugin body: invoked once per (re)load with the config.
+    /// Erase a component body: invoked once per (re)load with the config.
     pub fn apply<F>(f: F) -> Callback
     where
         F: Fn(&Context, &Value) -> Result<(), Box<dyn std::error::Error + Send + Sync>>

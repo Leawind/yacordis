@@ -1,4 +1,4 @@
-//! C-ABI types shared by host and plugins: buffers, callbacks, vtable.
+//! C-ABI types shared by host and components: buffers, callbacks, vtable.
 //!
 //! This module is compiled into both sides; its layout is frozen by
 //! [`ABI_VERSION`].
@@ -6,9 +6,11 @@
 use std::os::raw::c_void;
 
 /// Version of the ABI implemented by this crate. The host refuses to
-/// load plugins whose exported version differs. v2 added the
-/// `run_blocking`/`work_cancelled`/`work_cancel` host functions.
-pub const ABI_VERSION: u32 = 2;
+/// load components whose exported version differs. v2 added the
+/// `run_blocking`/`work_cancelled`/`work_cancel` host functions; v3
+/// renamed the exported symbols from `cordis_plugin_*` to
+/// `cordis_component_*` (upstream cordis#307 terminology).
+pub const ABI_VERSION: u32 = 3;
 
 /// A byte buffer crossing the boundary.
 ///
@@ -52,14 +54,14 @@ impl RawCallbacks {
     };
 }
 
-/// Plugin code the host can invoke (and drop) later.
+/// Component code the host can invoke (and drop) later.
 ///
 /// Constructed only through [`crate::callback`] constructors; the raw
 /// struct is `Copy` so arrays of callbacks can cross the boundary.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Callback {
-    /// Erased state owned by the plugin side.
+    /// Erased state owned by the component side.
     pub user_data: *mut c_void,
     /// Invocation entry point; `None` marks an inert placeholder.
     pub invoke: Option<RawInvoke>,
@@ -68,7 +70,7 @@ pub struct Callback {
     pub drop_fn: Option<unsafe extern "C" fn(user_data: *mut c_void)>,
 }
 
-/// The function the host calls to execute plugin code.
+/// The function the host calls to execute component code.
 ///
 /// Return codes:
 ///
@@ -76,7 +78,7 @@ pub struct Callback {
 /// - `1` — `out_json` holds a JSON result (listener bail value);
 /// - `2` — `out_callbacks` holds disposers (effect setup / apply);
 /// - `3` — `out_json` holds a UTF-8 error message (failure);
-/// - `-1` — the plugin panicked; message unavailable;
+/// - `-1` — the component panicked; message unavailable;
 /// - `-2` — one-shot callback invoked again after completion.
 ///
 /// # Safety (contract)
@@ -93,7 +95,7 @@ pub type RawInvoke = unsafe extern "C" fn(
     out_callbacks: *mut RawCallbacks,
 ) -> i32;
 
-/// Functions the host exposes to plugins. A single static instance is
+/// Functions the host exposes to components. A single static instance is
 /// shared by everything the host loads; its layout is frozen by
 /// [`ABI_VERSION`].
 #[repr(C)]
@@ -103,7 +105,7 @@ pub struct HostVTable {
     /// Free any boundary buffer (allocated by either side; backed by the
     /// process `malloc`/`free`, which both binaries share).
     pub free_buffer: unsafe extern "C" fn(RawBuffer),
-    /// Forward a plugin log line into the host's logger.
+    /// Forward a component log line into the host's logger.
     pub log: unsafe extern "C" fn(level: i32, target: RawBuffer, message: RawBuffer),
     /// Register a revertible effect on the context's fiber; returns the
     /// effect handle id (0 on failure).
@@ -131,15 +133,15 @@ pub struct HostVTable {
         args: RawBuffer,
         out: *mut RawBuffer,
     ) -> bool,
-    /// Install a sub-plugin (manifest + apply callback + JSON config);
+    /// Install a sub-component (manifest + apply callback + JSON config);
     /// returns the child fiber handle id (0 on failure).
-    pub plugin: unsafe extern "C" fn(
+    pub component: unsafe extern "C" fn(
         ctx: u64,
         manifest: RawBuffer,
         apply: Callback,
         config: RawBuffer,
     ) -> u64,
-    /// Dispose a fiber previously returned by `plugin` (0 = disposed now,
+    /// Dispose a fiber previously returned by `component` (0 = disposed now,
     /// 1 = already disposed, negative = error).
     pub fiber_dispose: unsafe extern "C" fn(handle: u64) -> i32,
     /// Run a work unit on a framework thread. For the `work` callback,
@@ -169,7 +171,7 @@ pub mod log_level {
     pub const ERROR: i32 = 3;
 }
 
-/// Panic code returned by trampolines when plugin code panics.
+/// Panic code returned by trampolines when component code panics.
 pub const CODE_PANIC: i32 = -1;
 /// Code returned when a one-shot callback is invoked a second time.
 pub const CODE_REUSED: i32 = -2;

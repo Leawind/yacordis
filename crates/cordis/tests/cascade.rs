@@ -39,7 +39,7 @@ fn multi_level_dependency_chain_unwinds_consumers_first() {
     // [provide, effect] means teardown runs the effect disposer first and
     // the withdrawal (which drives the whole downstream cascade) last.
     let mk_provider_a = |log: Log, tag: &'static str| {
-        move |ctx: &Context, _: &Value| -> PluginResult {
+        move |ctx: &Context, _: &Value| -> ComponentResult {
             ctx.provide("a", Arc::new(json!({ "from": tag })))?;
             ctx.effect("a/eff", {
                 let log = log.clone();
@@ -125,7 +125,7 @@ fn multi_level_dependency_chain_unwinds_consumers_first() {
     .expect("install B");
 
     let root_provider = ctx
-        .plugin(mk_provider_a(log.clone(), "a1"), json!(null))
+        .component(mk_provider_a(log.clone(), "a1"), json!(null))
         .expect("install A");
     assert!(root_provider.is_active());
     assert!(middle.is_active());
@@ -153,7 +153,7 @@ fn multi_level_dependency_chain_unwinds_consumers_first() {
 
     // Reinstalling the root revives the entire chain (bodies re-run).
     let root_provider = ctx
-        .plugin(mk_provider_a(log.clone(), "a2"), json!(null))
+        .component(mk_provider_a(log.clone(), "a2"), json!(null))
         .expect("reinstall A");
     assert!(root_provider.is_active());
     assert!(middle.is_active());

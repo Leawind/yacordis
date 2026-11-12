@@ -1,34 +1,34 @@
-//! Scope-released timers for cordis (cordis v3 `@cordisjs/plugin-timer`).
+//! Scope-released timers for cordis (cordis v3 `@cordisjs/component-timer`).
 //!
-//! Install [`TimerPlugin`] once; every context that resolves the `timer`
+//! Install [`TimerComponent`] once; every context that resolves the `timer`
 //! service can then create timers that are **effects of the calling
 //! fiber**: unloading the fiber cancels them automatically.
 //!
 //! ```no_run
-//! use cordis::{Context, Disposer, Plugin, PluginError, PluginResult};
-//! use cordis_timer::{TimerContextExt, TimerPlugin};
+//! use cordis::{Context, Disposer, Component, ComponentError, ComponentResult};
+//! use cordis_timer::{TimerContextExt, TimerComponent};
 //! use serde_json::json;
 //!
 //! let ctx = Context::new();
-//! ctx.plugin(TimerPlugin, json!(null)).unwrap();
+//! ctx.component(TimerComponent, json!(null)).unwrap();
 //!
 //! struct Worker;
-//! impl Plugin for Worker {
+//! impl Component for Worker {
 //!     fn name(&self) -> Option<&str> { Some("worker") }
-//!     fn apply(&self, ctx: &Context, _: &serde_json::Value) -> cordis::PluginResult {
+//!     fn apply(&self, ctx: &Context, _: &serde_json::Value) -> cordis::ComponentResult {
 //!         // Cancelled automatically when this fiber unloads.
 //!         ctx.set_timeout(
 //!             std::time::Duration::from_millis(100),
 //!             || println!("late"),
-//!         ).map_err(cordis::PluginError::new)?;
+//!         ).map_err(cordis::ComponentError::new)?;
 //!         Ok(())
 //!     }
 //! }
-//! # let _ = ctx.plugin(Worker, json!(null)).unwrap();
+//! # let _ = ctx.component(Worker, json!(null)).unwrap();
 //! ```
 //!
 //! The wheel runs on one background thread created at install time and
-//! shut down when the `TimerPlugin` fiber is disposed.
+//! shut down when the `TimerComponent` fiber is disposed.
 
 #![deny(missing_docs)]
 
@@ -38,10 +38,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use cordis::{Context, Disposer, Plugin, PluginError, PluginResult};
+use cordis::{Component, ComponentError, ComponentResult, Context, Disposer};
 use serde_json::Value;
 
-/// The name under which [`TimerPlugin`] provides [`TimerWheel`].
+/// The name under which [`TimerComponent`] provides [`TimerWheel`].
 pub const TIMER_SERVICE: &str = "timer";
 
 struct Task {
@@ -252,7 +252,7 @@ pub enum SleepOutcome {
 
 /// Timer helpers for any context that can resolve the `timer` service.
 pub trait TimerContextExt {
-    /// The timer wheel, when [`TimerPlugin`] is installed and active.
+    /// The timer wheel, when [`TimerComponent`] is installed and active.
     fn timer_wheel(&self) -> Option<Arc<TimerWheel>>;
 
     /// Run `callback` once after `delay`; cancelled when the current
@@ -275,7 +275,7 @@ pub trait TimerContextExt {
     /// [`SleepOutcome::Cancelled`] when the current fiber unloads.
     ///
     /// This blocks the *calling* thread — call it from worker threads,
-    /// not from a plugin body on the install path. The sleep is an
+    /// not from a component body on the install path. The sleep is an
     /// effect of the context's fiber, so it also wakes (as
     /// [`SleepOutcome::Cancelled`]) when that fiber is disposed.
     fn sleep(&self, delay: Duration) -> Result<SleepOutcome, String>;
@@ -378,23 +378,23 @@ impl TimerContextExt for Context {
 }
 
 /// Installs the timer wheel and provides it as the `timer` service.
-pub struct TimerPlugin;
+pub struct TimerComponent;
 
-impl Plugin for TimerPlugin {
+impl Component for TimerComponent {
     fn name(&self) -> Option<&str> {
         Some("timer")
     }
 
-    fn apply(&self, ctx: &Context, _config: &Value) -> PluginResult {
+    fn apply(&self, ctx: &Context, _config: &Value) -> ComponentResult {
         let wheel = TimerWheel::new();
         ctx.provide(TIMER_SERVICE, wheel.clone())
-            .map_err(PluginError::new)?;
+            .map_err(ComponentError::new)?;
         // Shut the wheel thread down when this fiber unloads.
         ctx.effect("timer/wheel", move |_| {
             let disposer: Disposer = Box::new(move || wheel.shutdown());
             Ok(Some(disposer))
         })
-        .map_err(PluginError::new)?;
+        .map_err(ComponentError::new)?;
         Ok(())
     }
 }

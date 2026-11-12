@@ -1,6 +1,6 @@
 //! Unload-contract mechanization (§4.1): the ast-grep lint profile
-//! rejects contract-violating plugin sources before they build, and the
-//! dispose audit collects context handles the plugin stashed.
+//! rejects contract-violating component sources before they build, and the
+//! dispose audit collects context handles the component stashed.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -42,7 +42,10 @@ fn lint_rejects_contract_violations_and_passes_clean_sources() {
     )
     .expect("write violation");
     let findings = lint_source(&violating).expect_err("violations found");
-    assert!(findings.contains("cordis-no-raw-thread-spawn"), "{findings}");
+    assert!(
+        findings.contains("cordis-no-raw-thread-spawn"),
+        "{findings}"
+    );
     assert!(findings.contains("cordis-no-mutable-static"), "{findings}");
 
     let clean = scratch_dir("clean");
@@ -68,7 +71,7 @@ fn lint_gated_build_rejects_violating_sources() {
     std::fs::create_dir_all(violating.join("src")).expect("src dir");
     std::fs::write(
         violating.join("Cargo.toml"),
-        "[package]\nname = \"bad-plugin\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n",
+        "[package]\nname = \"bad-component\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n",
     )
     .expect("write manifest");
     std::fs::write(
@@ -81,8 +84,7 @@ fn lint_gated_build_rejects_violating_sources() {
         lint: true,
         ..Default::default()
     };
-    let error = Loader::build(&violating, &options)
-        .expect_err("lint-gated build must reject");
+    let error = Loader::build(&violating, &options).expect_err("lint-gated build must reject");
     assert!(
         error.to_string().contains("cordis-no-raw-thread-spawn"),
         "{error}"
@@ -91,16 +93,19 @@ fn lint_gated_build_rejects_violating_sources() {
 
 #[test]
 fn dispose_audit_collects_stashed_context_handles() {
-    let plugin = Loader::build_and_load(fixture_dir(), &build_options()).expect("build and load");
+    let component =
+        Loader::build_and_load(fixture_dir(), &build_options()).expect("build and load");
     let ctx = Context::new();
     ctx.set_logger(Arc::new(cordis::DiscardLogger));
     ctx.provide("database", Arc::new(json!({ "uri": "pg://x" })))
         .expect("provide");
 
-    let handle = plugin.install(&ctx, json!({ "greeting": "hi" })).expect("install");
+    let handle = component
+        .install(&ctx, json!({ "greeting": "hi" }))
+        .expect("install");
     let fiber_id = handle.id().expect("fiber id");
-    // The FFI plugin caches a context handle for its fiber while alive.
-    // (The audit drains what it finds; a later plugin call re-mints.)
+    // The FFI component caches a context handle for its fiber while alive.
+    // (The audit drains what it finds; a later component call re-mints.)
     assert!(
         cordis_loader::audit_fiber_handles(fiber_id) > 0,
         "a live fiber has at least one context handle stashed"
@@ -115,7 +120,7 @@ fn dispose_audit_collects_stashed_context_handles() {
 }
 
 fn fixture_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/demo-plugin")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/demo-component")
 }
 
 fn build_options() -> BuildOptions {

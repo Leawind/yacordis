@@ -3,7 +3,7 @@
 //! Buffers use the process's `malloc`/`free` (both binaries link the one
 //! libc instance), so **either side may free a buffer regardless of
 //! which side allocated it**. The only rule is: free exactly once.
-//! Plugin closure state, by contrast, is ordinary Rust heap memory and
+//! Component closure state, by contrast, is ordinary Rust heap memory and
 //! stays owned by the side that created it (hence `Callback::drop_fn`).
 
 use std::os::raw::c_void;
@@ -64,7 +64,7 @@ pub fn buffer_into_vec(buffer: RawBuffer) -> Vec<u8> {
 
 /// Read a boundary buffer as UTF-8, replacing invalid sequences.
 #[must_use]
-#[allow(dead_code)] // convenience for hosts and plugins
+#[allow(dead_code)] // convenience for hosts and components
 pub fn buffer_to_string(buffer: RawBuffer) -> String {
     String::from_utf8_lossy(&buffer_into_vec(buffer)).into_owned()
 }

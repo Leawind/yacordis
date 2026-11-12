@@ -43,14 +43,14 @@ fn concurrent_install_dispose_cycles_across_isolation_groups() {
             let group = ctx.isolate("database");
             for cycle in 0..CYCLES {
                 let provider = group
-                    .plugin_dyn(
-                        Arc::new(move |ctx: &Context, _: &Value| -> PluginResult {
+                    .component_dyn(
+                        Arc::new(move |ctx: &Context, _: &Value| -> ComponentResult {
                             ctx.provide(
                                 "database",
                                 Arc::new(json!({ "thread": thread, "cycle": cycle })),
                             )?;
                             Ok(())
-                        }) as Arc<dyn Plugin>,
+                        }) as Arc<dyn Component>,
                         json!(null),
                     )
                     .expect("install provider");

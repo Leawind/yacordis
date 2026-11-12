@@ -1,23 +1,23 @@
-//! Host-side callback wrapper and the FFI→native plugin adapter.
+//! Host-side callback wrapper and the FFI→native component adapter.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use cordis_plugin_api::{Callback, RawBuffer, RawCallbacks};
+use cordis_component_api::{Callback, RawBuffer, RawCallbacks};
 use serde_json::Value;
 
 use crate::handles::{HandleTable, HostObject};
 use crate::vtable::{HOST_VTABLE, handles};
 
-/// A [`Callback`] erased from plugin code, safe to store in host
+/// A [`Callback`] erased from component code, safe to store in host
 /// structures that require `Send + Sync`.
 ///
 /// # Safety contract
 ///
-/// The `unsafe impl Send/Sync` is sound because the plugin API requires
+/// The `unsafe impl Send/Sync` is sound because the component API requires
 /// every erased closure to be `Send + Sync` before construction
 /// (`Callback::listener` etc. enforce it at the type level), and the
-/// host only ever touches `user_data` through the plugin's own
+/// host only ever touches `user_data` through the component's own
 /// trampolines.
 pub(crate) struct SendCallback {
     pub callback: Callback,
@@ -53,8 +53,8 @@ impl Drop for SendCallback {
 }
 
 impl SendCallback {
-    /// Invoke the plugin trampoline. `ctx_handle` identifies the context
-    /// the plugin sees inside the callback.
+    /// Invoke the component trampoline. `ctx_handle` identifies the context
+    /// the component sees inside the callback.
     pub(crate) fn invoke(&self, ctx_handle: u64, args: &Value) -> Invocation {
         let Some(invoke) = self.callback.invoke else {
             return Invocation::Failed("callback has no entry point".into());
@@ -62,10 +62,10 @@ impl SendCallback {
         // Ownership: the trampoline frees `args_buf` (shared allocator);
         // output buffers are freed here after reading.
         let args_buf =
-            cordis_plugin_api::buffer_from_vec(serde_json::to_vec(args).unwrap_or_default());
+            cordis_component_api::buffer_from_vec(serde_json::to_vec(args).unwrap_or_default());
         let mut out_json = RawBuffer::EMPTY;
         let mut out_callbacks = RawCallbacks::EMPTY;
-        // SAFETY: user_data/invoke come from a live plugin callback; the
+        // SAFETY: user_data/invoke come from a live component callback; the
         // vtable pointer is our own static.
         let code = unsafe {
             (invoke)(
@@ -81,27 +81,29 @@ impl SendCallback {
             0 => Invocation::Ok(None),
             1 => {
                 let value =
-                    serde_json::from_slice(&cordis_plugin_api::buffer_into_vec(out_json)).ok();
-                cordis_plugin_api::free_buffer(out_json);
+                    serde_json::from_slice(&cordis_component_api::buffer_into_vec(out_json)).ok();
+                cordis_component_api::free_buffer(out_json);
                 Invocation::Ok(value)
             }
             2 => {
                 let disposers = copy_callbacks(out_callbacks);
-                cordis_plugin_api::free_buffer(callbacks_as_buffer(out_callbacks));
+                cordis_component_api::free_buffer(callbacks_as_buffer(out_callbacks));
                 Invocation::Disposers(disposers)
             }
             3 => {
-                let message = cordis_plugin_api::buffer_to_string(out_json);
-                cordis_plugin_api::free_buffer(out_json);
+                let message = cordis_component_api::buffer_to_string(out_json);
+                cordis_component_api::free_buffer(out_json);
                 Invocation::Failed(message)
             }
-            cordis_plugin_api::CODE_PANIC => Invocation::Failed("plugin code panicked".into()),
-            other => Invocation::Failed(format!("plugin callback returned code {other}")),
+            cordis_component_api::CODE_PANIC => {
+                Invocation::Failed("component code panicked".into())
+            }
+            other => Invocation::Failed(format!("component callback returned code {other}")),
         }
     }
 }
 
-/// What a plugin trampoline answered with.
+/// What a component trampoline answered with.
 pub(crate) enum Invocation {
     Ok(Option<Value>),
     Disposers(Vec<cordis::Disposer>),
@@ -134,18 +136,18 @@ fn callbacks_as_buffer(raw: RawCallbacks) -> RawBuffer {
     }
 }
 
-/// Adapter presenting a dynamically loaded plugin as a native
-/// `Arc<dyn cordis::Plugin>`.
-pub struct FfiPlugin {
+/// Adapter presenting a dynamically loaded component as a native
+/// `Arc<dyn cordis::Component>`.
+pub struct FfiComponent {
     name: Option<String>,
     inject: cordis::Inject,
     apply: SendCallback,
-    /// Fiber id → context handle, so a stashed plugin-side context
+    /// Fiber id → context handle, so a stashed component-side context
     /// stays valid across reloads of the same fiber.
     ctx_handles: Mutex<HashMap<u64, u64>>,
 }
 
-impl FfiPlugin {
+impl FfiComponent {
     pub(crate) fn new(name: Option<String>, inject: cordis::Inject, apply: SendCallback) -> Self {
         Self {
             name,
@@ -172,7 +174,7 @@ impl FfiPlugin {
     }
 }
 
-impl cordis::Plugin for FfiPlugin {
+impl cordis::Component for FfiComponent {
     fn name(&self) -> Option<&str> {
         self.name.as_deref()
     }
@@ -181,22 +183,22 @@ impl cordis::Plugin for FfiPlugin {
         self.inject.clone()
     }
 
-    fn apply(&self, ctx: &cordis::Context, config: &Value) -> cordis::PluginResult {
+    fn apply(&self, ctx: &cordis::Context, config: &Value) -> cordis::ComponentResult {
         let ctx_handle = self.context_handle(ctx, handles());
         // Runs inside the core's effect-collection scope, so every
-        // registration the plugin body makes through the vtable lands in
+        // registration the component body makes through the vtable lands in
         // this fiber's effect list automatically.
         match self.apply.invoke(ctx_handle, config) {
             Invocation::Ok(_) => Ok(()),
             Invocation::Disposers(disposers) => {
-                // The apply channel does not carry disposers; if a plugin
+                // The apply channel does not carry disposers; if a component
                 // produces them anyway, revert immediately.
                 for disposer in disposers {
                     disposer();
                 }
                 Ok(())
             }
-            Invocation::Failed(message) => Err(cordis::PluginError::new(message)),
+            Invocation::Failed(message) => Err(cordis::ComponentError::new(message)),
         }
     }
 }

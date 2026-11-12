@@ -14,13 +14,13 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use serde_json::Value;
 
+use crate::component::{Component, Inject, InjectClosure};
 use crate::effect::{EffectHandle, attach_effect};
-use crate::error::{CordisError, PluginError, PluginResult};
+use crate::error::{ComponentError, ComponentResult, CordisError};
 use crate::events;
 use crate::fiber::{Fiber, FiberState, ServiceImpl, disposal_disposer};
 use crate::logger::{Logger, LoggerHandle, StderrLogger};
-use crate::plugin::{Inject, InjectClosure, Plugin};
-use crate::registry::{Registry, plugin_key};
+use crate::registry::{Registry, component_key};
 
 /// Identity of one isolation group for a service name. Labels compare by
 /// pointer identity; every [`Context::isolate`] derivation mints a fresh
@@ -122,11 +122,11 @@ impl Core {
     }
 
     /// Mint a fiber id. The counter is **process-global**, not per
-    /// runtime: the loader's plugin-facing handle table is process-global
+    /// runtime: the loader's component-facing handle table is process-global
     /// and garbage-collects context handles by fiber id on dispose, so two
     /// runtimes in one process must never mint the same id (a collision
     /// lets one runtime's dispose audit remove the other's live context
-    /// handles, which surfaces as `run_blocking failed` in a plugin).
+    /// handles, which surfaces as `run_blocking failed` in a component).
     pub(crate) fn next_fiber_id(&self) -> u64 {
         static NEXT: AtomicU64 = AtomicU64::new(1);
         NEXT.fetch_add(1, Ordering::Relaxed)
@@ -150,7 +150,7 @@ impl Core {
 }
 
 /// A scoped handle onto the cordis runtime: entry point for installing
-/// plugins, providing services, registering events and effects.
+/// components, providing services, registering events and effects.
 #[derive(Clone)]
 pub struct Context {
     pub(crate) core: Arc<Core>,
@@ -181,7 +181,7 @@ impl Context {
         }
     }
 
-    /// The root context: outside every plugin, no isolations applied.
+    /// The root context: outside every component, no isolations applied.
     pub fn root(&self) -> Context {
         Context {
             core: self.core.clone(),
@@ -190,11 +190,11 @@ impl Context {
         }
     }
 
-    /// Derive a context that isolates one service name: plugins installed
+    /// Derive a context that isolates one service name: components installed
     /// through the derived context see a **different** instance of that
     /// service than the rest of the runtime (cordis `ctx.isolate`).
     ///
-    /// The same plugin can therefore be installed several times, each
+    /// The same component can therefore be installed several times, each
     /// instance wired to its own instance of the isolated service.
     pub fn isolate(&self, name: impl AsRef<str>) -> Context {
         Context {
@@ -253,46 +253,46 @@ impl Context {
     }
 
     // -----------------------------------------------------------------
-    // Plugins
+    // Components
     // -----------------------------------------------------------------
 
-    /// Install a plugin on the current fiber and run its body (when its
+    /// Install a component on the current fiber and run its body (when its
     /// required services are available).
     ///
     /// Body failures do not error here: the fiber enters
     /// [`FiberState::Failed`] and the error surfaces from
     /// [`FiberHandle::update`] / [`FiberHandle::restart`].
-    pub fn plugin(
+    pub fn component(
         &self,
-        plugin: impl Plugin,
+        component: impl Component,
         config: impl Into<Value>,
     ) -> Result<FiberHandle, CordisError> {
-        self.plugin_dyn(Arc::new(plugin), config.into())
+        self.component_dyn(Arc::new(component), config.into())
     }
 
-    /// Install an already-erased plugin. This is the entry point used by
-    /// the dynamic loader for cdylib plugins.
-    pub fn plugin_dyn(
+    /// Install an already-erased component. This is the entry point used by
+    /// the dynamic loader for cdylib components.
+    pub fn component_dyn(
         &self,
-        plugin: Arc<dyn Plugin>,
+        component: Arc<dyn Component>,
         config: impl Into<Value>,
     ) -> Result<FiberHandle, CordisError> {
-        let parent = self.active_fiber("install a plugin")?;
+        let parent = self.active_fiber("install a component")?;
         let config = config.into();
-        let name = plugin.name().unwrap_or("anonymous").to_owned();
+        let name = component.name().unwrap_or("anonymous").to_owned();
 
-        // Get or create the runtime entry for this plugin identity.
-        let key = plugin_key(&plugin);
+        // Get or create the runtime entry for this component identity.
+        let key = component_key(&component);
         let runtime = {
             let mut registry = self.core.registry.lock().unwrap();
-            registry.entry(key, name.clone(), &plugin)
+            registry.entry(key, name.clone(), &component)
         };
 
         let fiber = Fiber::install(
             &self.core,
             self.isolate.clone(),
             Arc::downgrade(&parent),
-            plugin,
+            component,
             config,
             name,
         );
@@ -311,8 +311,8 @@ impl Context {
         // Register disposal with the parent fiber: when the parent
         // unloads, this fiber is torn down with it (cascade). Claimed by
         // the parent's open effect batch when installing from inside
-        // another plugin body.
-        let handle = EffectHandle::new("ctx.plugin()");
+        // another component body.
+        let handle = EffectHandle::new("ctx.component()");
         handle.push(disposal_disposer(&fiber));
         attach_effect(&parent, handle);
 
@@ -322,46 +322,46 @@ impl Context {
         })
     }
 
-    /// Sugar for a closure plugin with declared dependencies:
+    /// Sugar for a closure component with declared dependencies:
     /// `ctx.inject(Inject::required(&["database"]), |ctx| { … })`.
     pub fn inject<F>(&self, deps: Inject, f: F) -> Result<FiberHandle, CordisError>
     where
-        F: Fn(&Context) -> PluginResult + Send + Sync + 'static,
+        F: Fn(&Context) -> ComponentResult + Send + Sync + 'static,
     {
-        self.plugin_dyn(Arc::new(InjectClosure { inject: deps, f }), Value::Null)
+        self.component_dyn(Arc::new(InjectClosure { inject: deps, f }), Value::Null)
     }
 
     /// Replace every fiber installed from `old` with `new`, in place
     /// (v4 `registry.replace`). Fibers keep their identity — id, parent,
     /// config — and re-run the new body through the normal unload/reload
     /// cascade, so dependents observe the service change. A failed fiber
-    /// recovers. After the call, `old` is no longer a registered plugin
+    /// recovers. After the call, `old` is no longer a registered component
     /// identity: installing it again starts a fresh runtime.
     ///
     /// Returns handles to the affected fibers. Body failures land on the
     /// fiber ([`FiberState::Failed`]); the first such error is returned.
-    pub fn replace_plugin(
+    pub fn replace_component(
         &self,
-        old: Arc<dyn Plugin>,
-        new: Arc<dyn Plugin>,
+        old: Arc<dyn Component>,
+        new: Arc<dyn Component>,
     ) -> Result<Vec<FiberHandle>, CordisError> {
         let fibers = {
             let registry = self.core.registry.lock().unwrap();
-            registry.fibers_of(plugin_key(&old))
+            registry.fibers_of(component_key(&old))
         }
         .ok_or_else(|| {
-            CordisError::PluginError(PluginError(
-                "replace_plugin: plugin is not installed".into(),
+            CordisError::ComponentError(ComponentError(
+                "replace_component: component is not installed".into(),
             ))
         })?;
-        let new_key = plugin_key(&new);
+        let new_key = component_key(&new);
         let new_name = new.name().unwrap_or("anonymous").to_owned();
 
         let mut handles = Vec::new();
         let mut first_error = None;
         for fiber in fibers {
             crate::registry::move_fiber(&self.core, &fiber, new_key, new_name.clone(), &new);
-            if let Err(err) = fiber.replace_plugin(&self.core, new.clone()) {
+            if let Err(err) = fiber.replace_component(&self.core, new.clone()) {
                 first_error.get_or_insert(err);
             }
             handles.push(FiberHandle {
@@ -571,10 +571,10 @@ impl Context {
         self.core.logger.set(logger);
     }
 
-    /// Introspection: every plugin identity with installed fibers, and
+    /// Introspection: every component identity with installed fibers, and
     /// the state of each fiber. Hosts and debug UIs use this to answer
     /// "what is loaded right now?".
-    pub fn installed_plugins(&self) -> Vec<PluginSummary> {
+    pub fn installed_components(&self) -> Vec<ComponentSummary> {
         let registry = self.core.registry.lock().unwrap();
         registry.summaries()
     }
@@ -601,7 +601,7 @@ impl Context {
     /// Introspection: groups of installed fibers that mutually wait for
     /// each other's declared provides — none of them can ever activate
     /// (the counterpart of cordis v4 issue #66, which pends silently).
-    /// Empty unless [`Plugin::provides`](crate::Plugin::provides)
+    /// Empty unless [`Component::provides`](crate::Component::provides)
     /// declarations close a loop among pending fibers; the same groups
     /// are logged (once per shape) as they form.
     pub fn dependency_cycles(&self) -> Vec<Vec<String>> {
@@ -625,7 +625,7 @@ impl Context {
         self.core.quiesce();
     }
 
-    /// Dispose every installed plugin fiber (root effects survive; this is
+    /// Dispose every installed component fiber (root effects survive; this is
     /// a teardown helper for hosts and tests).
     pub fn dispose_all(&self) {
         let fibers: Vec<Arc<Fiber>> = {
@@ -685,23 +685,23 @@ impl Core {
 /// Handle that removes a listener (an alias: listeners *are* effects).
 pub type ListenerHandle = EffectHandle;
 
-/// Summary of one installed plugin fiber.
+/// Summary of one installed component fiber.
 #[derive(Clone, Debug)]
 pub struct FiberSummary {
     /// The fiber id.
     pub id: u64,
-    /// The plugin name (or `anonymous`).
+    /// The component name (or `anonymous`).
     pub name: String,
     /// Current lifecycle state.
     pub state: FiberState,
 }
 
-/// Summary of one plugin identity and its installed fibers.
+/// Summary of one component identity and its installed fibers.
 #[derive(Clone, Debug)]
-pub struct PluginSummary {
-    /// Plugin name, when declared.
+pub struct ComponentSummary {
+    /// Component name, when declared.
     pub name: Option<String>,
-    /// Every fiber installed from this plugin.
+    /// Every fiber installed from this component.
     pub fibers: Vec<FiberSummary>,
 }
 
@@ -710,13 +710,13 @@ pub struct PluginSummary {
 pub struct ServiceSummary {
     /// Service name.
     pub name: String,
-    /// Name of the owning plugin fiber.
+    /// Name of the owning component fiber.
     pub owner: String,
     /// Whether the owner fiber is currently active.
     pub active: bool,
 }
 
-/// Handle onto an installed plugin fiber: inspect state, hot-update its
+/// Handle onto an installed component fiber: inspect state, hot-update its
 /// config, restart, or dispose (dynamic uninstall).
 #[derive(Clone)]
 pub struct FiberHandle {
@@ -740,7 +740,7 @@ impl FiberHandle {
         self.upgrade().map(|f| f.id)
     }
 
-    /// The plugin name, or `None` when the fiber is gone.
+    /// The component name, or `None` when the fiber is gone.
     pub fn name(&self) -> Option<String> {
         self.upgrade().map(|f| f.name.clone())
     }
@@ -794,7 +794,7 @@ impl FiberHandle {
     /// Update the config and restart the fiber (v4 `fiber.update`).
     /// Clears a previous failure. Listeners on `internal/update` may
     /// transform the config through the middleware chain. When the
-    /// plugin declares a schema, the (waterfall-transformed) config is
+    /// component declares a schema, the (waterfall-transformed) config is
     /// validated and resolved first; a rejected config is an error and
     /// the fiber keeps its previous config and state.
     pub fn update(&self, config: impl Into<Value>) -> Result<(), CordisError> {
@@ -812,13 +812,13 @@ impl FiberHandle {
             config.into(),
             Box::new(std::convert::identity),
         )?;
-        // Resolve through the plugin's schema before committing: a
+        // Resolve through the component's schema before committing: a
         // rejected update must not touch the running fiber.
         let config = {
-            let plugin = fiber.inner.lock().unwrap().plugin.clone();
-            match plugin.and_then(|p| p.schema()) {
+            let component = fiber.inner.lock().unwrap().component.clone();
+            match component.and_then(|p| p.schema()) {
                 Some(schema) => schema.resolve(&config).map_err(|diagnostics| {
-                    CordisError::PluginError(PluginError(
+                    CordisError::ComponentError(ComponentError(
                         diagnostics
                             .iter()
                             .map(|d| d.to_string())

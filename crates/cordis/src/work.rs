@@ -21,7 +21,7 @@
 //! work unit is registered both as an effect of its fiber (scope
 //! lifetime) and in the fiber's work list. `unload` (and the
 //! failed-body rollback) first cancels and joins every in-flight unit,
-//! then disposes effects — no plugin code runs concurrently with
+//! then disposes effects — no component code runs concurrently with
 //! rollback. `join` skips the unit executing on the current thread, so
 //! an `on_done` that disposes its own fiber cannot self-deadlock.
 
@@ -38,7 +38,7 @@ use serde_json::Value;
 
 use crate::context::{Context, Core, IsolateMap};
 use crate::effect::{EffectHandle, attach_effect};
-use crate::error::{CordisError, PluginError};
+use crate::error::{ComponentError, CordisError};
 use crate::fiber::Fiber;
 use crate::logger::LogLevel;
 
@@ -46,7 +46,7 @@ use crate::logger::LogLevel;
 /// outcome once the unit finished (or was cancelled).
 pub type CompletionCallback = Box<dyn FnOnce(&Context, WorkOutcome) + Send>;
 /// The blocking work itself: pure computation against a cancel token.
-pub type WorkClosure = Box<dyn FnOnce(&CancellationToken) -> Result<Value, PluginError> + Send>;
+pub type WorkClosure = Box<dyn FnOnce(&CancellationToken) -> Result<Value, ComponentError> + Send>;
 
 /// Cooperative cancellation token handed to a blocking work unit. The
 /// unit must poll it for timely unloads; a unit that ignores it holds
@@ -71,7 +71,7 @@ pub enum WorkOutcome {
     /// finishing.
     Cancelled,
     /// The work returned an error.
-    Failed(PluginError),
+    Failed(ComponentError),
     /// The work panicked; the payload message is carried as an error.
     Panicked(String),
 }
@@ -105,7 +105,7 @@ pub(crate) struct WorkUnit {
     isolate: Arc<IsolateMap>,
     cancelled: Arc<AtomicBool>,
     /// Set (and announced) after the completion callback returned. Held
-    /// across the callback, so `join` waits for plugin code to finish.
+    /// across the callback, so `join` waits for component code to finish.
     done: Mutex<bool>,
     signal: Condvar,
     on_done: Mutex<Option<CompletionCallback>>,
@@ -149,7 +149,7 @@ thread_local! {
 /// Run one completion step: build the context (dropping completion when
 /// the fiber is gone), invoke the callback outside panics, then mark
 /// done. The done flag is held across the callback, so concurrent
-/// `join`s wait for plugin code to finish and double delivery is
+/// `join`s wait for component code to finish and double delivery is
 /// impossible. Runs on the worker/executor thread.
 fn deliver(unit: &Arc<WorkUnit>, outcome: WorkOutcome) {
     let mut done = unit.done.lock().unwrap();
@@ -214,7 +214,7 @@ impl Context {
         on_done: D,
     ) -> Result<WorkHandle, CordisError>
     where
-        W: FnOnce(&CancellationToken) -> Result<Value, PluginError> + Send + 'static,
+        W: FnOnce(&CancellationToken) -> Result<Value, ComponentError> + Send + 'static,
         D: FnOnce(&Context, WorkOutcome) + Send + 'static,
     {
         let fiber = self.active_fiber("start blocking work")?;
@@ -236,7 +236,7 @@ impl Context {
         on_done: D,
     ) -> Result<WorkHandle, CordisError>
     where
-        Fut: Future<Output = Result<Value, PluginError>> + Send + 'static,
+        Fut: Future<Output = Result<Value, ComponentError>> + Send + 'static,
         D: FnOnce(&Context, WorkOutcome) + Send + 'static,
     {
         let fiber = self.active_fiber("spawn a future")?;
@@ -325,7 +325,7 @@ pub(crate) fn drain_fiber_works(fiber: &Fiber) {
 // Single-threaded executor for spawned futures
 // ---------------------------------------------------------------------
 
-type FutureBox = Pin<Box<dyn Future<Output = Result<Value, PluginError>> + Send>>;
+type FutureBox = Pin<Box<dyn Future<Output = Result<Value, ComponentError>> + Send>>;
 
 struct ExecTask {
     future: Mutex<Option<FutureBox>>,
@@ -334,7 +334,10 @@ struct ExecTask {
 }
 
 impl ExecTask {
-    fn new(future: impl Future<Output = Result<Value, PluginError>> + Send + 'static, unit: Arc<WorkUnit>) -> Arc<ExecTask> {
+    fn new(
+        future: impl Future<Output = Result<Value, ComponentError>> + Send + 'static,
+        unit: Arc<WorkUnit>,
+    ) -> Arc<ExecTask> {
         Arc::new(ExecTask {
             future: Mutex::new(Some(Box::pin(future))),
             unit,
@@ -349,7 +352,11 @@ impl Wake for ExecTask {
     }
 
     fn wake_by_ref(self: &Arc<Self>) {
-        let exec = self.unit.exec.as_ref().expect("executor task carries its executor");
+        let exec = self
+            .unit
+            .exec
+            .as_ref()
+            .expect("executor task carries its executor");
         let mut g = exec.ready.lock().unwrap();
         g.queue.push_back(self.clone());
         exec.signal.notify_all();
@@ -391,7 +398,7 @@ pub(crate) struct Executor {
 impl Executor {
     /// Start the executor thread. It holds an `Arc<Core>`, so the core
     /// (and the executor) live until process exit — the same
-    /// keep-mapped honesty as loaded plugin code.
+    /// keep-mapped honesty as loaded component code.
     fn start(core: Arc<Core>) -> Executor {
         let inner = Arc::new(ExecInner {
             ready: Mutex::new(ExecState {
@@ -420,7 +427,9 @@ fn executor_loop(_core: Arc<Core>, exec: Arc<ExecInner>) {
                 .filter(|(_, t)| t.aborted.load(Ordering::Acquire))
                 .map(|(id, _)| *id)
                 .collect();
-            keys.into_iter().filter_map(|id| g.inflight.remove(&id)).collect()
+            keys.into_iter()
+                .filter_map(|id| g.inflight.remove(&id))
+                .collect()
         };
         for task in aborted {
             finish_aborted(&task);
@@ -442,7 +451,7 @@ fn executor_loop(_core: Arc<Core>, exec: Arc<ExecInner>) {
                 let mut guard = task.future.lock().unwrap();
                 match guard.as_mut() {
                     Some(future) => future.as_mut().poll(&mut cx),
-                    None => Poll::Ready(Err(PluginError::new("future already consumed"))),
+                    None => Poll::Ready(Err(ComponentError::new("future already consumed"))),
                 }
             };
             match poll {
@@ -474,7 +483,12 @@ fn executor_loop(_core: Arc<Core>, exec: Arc<ExecInner>) {
 
         // 3. Park until a waker or submitter wakes us.
         let mut g = exec.ready.lock().unwrap();
-        if g.queue.is_empty() && !g.inflight.values().any(|t| t.aborted.load(Ordering::Acquire)) {
+        if g.queue.is_empty()
+            && !g
+                .inflight
+                .values()
+                .any(|t| t.aborted.load(Ordering::Acquire))
+        {
             g = exec.signal.wait(g).unwrap();
         }
     }

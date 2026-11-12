@@ -2,7 +2,7 @@ id: cordis-no-raw-thread-spawn
 language: Rust
 severity: error
 message: >
-  Unregistered threads keep running plugin code through rollback (§4.1 I1).
+  Unregistered threads keep running component code through rollback (§4.1 I1).
   Submit work through the framework instead: ctx.run_blocking registers the
   unit as an effect and unload drains it.
 rule:

@@ -22,10 +22,10 @@ fn provide_schema_gates_provide_and_set() {
     let observed: Arc<Mutex<Vec<String>>> = Arc::default();
 
     let worker = ctx
-        .plugin(
+        .component(
             {
                 let observed = observed.clone();
-                move |ctx: &Context, _: &Value| -> PluginResult {
+                move |ctx: &Context, _: &Value| -> ComponentResult {
                     let observed = observed.clone();
                     ctx.provide_schema("counter", counter_schema())
                         .expect("register schema");
@@ -40,7 +40,9 @@ fn provide_schema_gates_provide_and_set() {
                     observed.lock().unwrap().push(format!(
                         "set-rejected={} kept={}",
                         error.to_string().contains("at least 0"),
-                        ctx.get::<Value>("counter").map(|v| v.as_ref().clone()).unwrap()
+                        ctx.get::<Value>("counter")
+                            .map(|v| v.as_ref().clone())
+                            .unwrap()
                     ));
 
                     // A violating fresh provide fails the call.
@@ -78,24 +80,21 @@ fn schema_registration_dies_with_its_fiber() {
 
     // A scoped fiber raises the gate and probes it from inside.
     let scope = ctx
-        .plugin(
+        .component(
             {
                 let observed = observed.clone();
-                move |ctx: &Context, _: &Value| -> PluginResult {
+                move |ctx: &Context, _: &Value| -> ComponentResult {
                     let observed = observed.clone();
                     ctx.provide_schema("temporary", counter_schema())
                         .expect("register schema");
                     // Violating provide while the gate is up: rejected.
                     let error = ctx
-                        .provide(
-                            "temporary",
-                            Arc::new(json!("not an object")),
-                        )
+                        .provide("temporary", Arc::new(json!("not an object")))
                         .expect_err("gate active");
-                    observed
-                        .lock()
-                        .unwrap()
-                        .push(format!("gated={}", error.to_string().contains("expected an object")));
+                    observed.lock().unwrap().push(format!(
+                        "gated={}",
+                        error.to_string().contains("expected an object")
+                    ));
                     Ok(())
                 }
             },
@@ -111,10 +110,13 @@ fn schema_registration_dies_with_its_fiber() {
 
     // After disposal the gate is gone: a violating value provides fine.
     let after = ctx
-        .plugin(|ctx: &Context, _: &Value| -> PluginResult {
-            ctx.provide("temporary", Arc::new(json!("anything goes now")))?;
-            Ok(())
-        }, json!(null))
+        .component(
+            |ctx: &Context, _: &Value| -> ComponentResult {
+                ctx.provide("temporary", Arc::new(json!("anything goes now")))?;
+                Ok(())
+            },
+            json!(null),
+        )
         .expect("provide after gate lifted");
     assert!(after.is_active());
 }
@@ -123,11 +125,14 @@ fn schema_registration_dies_with_its_fiber() {
 fn typed_services_bypass_service_schemas() {
     let ctx = Context::new();
     let worker = ctx
-        .plugin(|ctx: &Context, _: &Value| -> PluginResult {
-            ctx.provide_schema("magic", counter_schema())?;
-            ctx.provide("magic", Arc::new(42u32))?;
-            Ok(())
-        }, json!(null))
+        .component(
+            |ctx: &Context, _: &Value| -> ComponentResult {
+                ctx.provide_schema("magic", counter_schema())?;
+                ctx.provide("magic", Arc::new(42u32))?;
+                Ok(())
+            },
+            json!(null),
+        )
         .expect("install");
     assert!(worker.is_active(), "typed services bypass the schema");
     assert_eq!(ctx.get::<u32>("magic").map(|v| *v), Some(42));

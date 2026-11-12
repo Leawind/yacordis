@@ -1,5 +1,5 @@
-//! End-to-end proof of runtime binary plugin installation: cargo-build a
-//! real cdylib plugin from source, load it into a running host, and
+//! End-to-end proof of runtime binary component installation: cargo-build a
+//! real cdylib component from source, load it into a running host, and
 //! drive its full lifecycle across the C ABI.
 
 use std::path::Path;
@@ -10,7 +10,7 @@ use cordis_loader::{BuildOptions, Loader};
 use serde_json::{Value, json};
 
 fn fixture_dir() -> std::path::PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/demo-plugin")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/demo-component")
 }
 
 fn build_options() -> BuildOptions {
@@ -24,22 +24,23 @@ fn build_options() -> BuildOptions {
 }
 
 #[test]
-fn full_binary_plugin_lifecycle() {
-    // 1. Build the plugin from source (the developer path) and load it.
-    let plugin = Loader::build_and_load(fixture_dir(), &build_options()).expect("build and load");
-    assert_eq!(plugin.manifest.name.as_deref(), Some("demo-greeter"));
-    assert_eq!(plugin.manifest.required, vec!["database".to_owned()]);
-    assert!(plugin.manifest.optional.is_empty());
+fn full_binary_component_lifecycle() {
+    // 1. Build the component from source (the developer path) and load it.
+    let component =
+        Loader::build_and_load(fixture_dir(), &build_options()).expect("build and load");
+    assert_eq!(component.manifest.name.as_deref(), Some("demo-greeter"));
+    assert_eq!(component.manifest.required, vec!["database".to_owned()]);
+    assert!(component.manifest.optional.is_empty());
 
     let ctx = Context::new();
     ctx.set_logger(Arc::new(cordis::DiscardLogger));
 
-    // 2. Host provides the dependency the plugin requires, then installs.
+    // 2. Host provides the dependency the component requires, then installs.
     ctx.provide("database", Arc::new(json!({ "uri": "pg://host/test" })))
         .expect("provide");
 
     // A native consumer of the FFI-provided service: it only activates
-    // once the *binary plugin* provides `greeter`.
+    // once the *binary component* provides `greeter`.
     let consumer = ctx
         .inject(Inject::required(&["greeter"]), |ctx: &Context| {
             assert!(ctx.get::<Value>("greeter").is_some(), "FFI service visible");
@@ -48,19 +49,19 @@ fn full_binary_plugin_lifecycle() {
         .expect("install consumer");
     assert_eq!(consumer.state(), FiberState::Pending);
 
-    // 3. Install the binary plugin: it activates and its service feeds
+    // 3. Install the binary component: it activates and its service feeds
     //    the native consumer reactively.
     let log_path = build_options()
         .target_dir
         .unwrap()
         .join("demo-lifecycle.log");
     let _ = std::fs::remove_file(&log_path);
-    let handle = plugin
+    let handle = component
         .install(
             &ctx,
             json!({ "greeting": "hola", "log": log_path.to_str().unwrap() }),
         )
-        .expect("install plugin");
+        .expect("install component");
     assert_eq!(handle.state(), FiberState::Active);
     assert_eq!(
         consumer.state(),
@@ -68,7 +69,7 @@ fn full_binary_plugin_lifecycle() {
         "consumer activated by FFI service"
     );
 
-    // 4. Events dispatched by the host reach the plugin listener; the
+    // 4. Events dispatched by the host reach the component listener; the
     //    listener reads the host-provided service through the ABI.
     let reply = ctx
         .bail("greet", &json!({ "who": "world" }))
@@ -76,7 +77,7 @@ fn full_binary_plugin_lifecycle() {
     assert_eq!(
         reply,
         json!({ "text": "hola, world (db: pg://host/test)" }),
-        "plugin listener answer"
+        "component listener answer"
     );
 
     // 5. The provided service is typed-downcastable natively.
@@ -93,7 +94,7 @@ fn full_binary_plugin_lifecycle() {
     );
     assert!(handle.is_active());
 
-    // 7. Dispose: plugin disposers run (file proof), service withdrawn,
+    // 7. Dispose: component disposers run (file proof), service withdrawn,
     //    the native consumer deactivates.
     handle.dispose();
     assert_eq!(
@@ -102,7 +103,7 @@ fn full_binary_plugin_lifecycle() {
         "consumer halted with provider"
     );
     assert!(!ctx.has("greeter"));
-    let log = std::fs::read_to_string(&log_path).expect("plugin log file");
+    let log = std::fs::read_to_string(&log_path).expect("component log file");
     assert_eq!(
         log.matches("setup\n").count(),
         2,
@@ -115,7 +116,7 @@ fn full_binary_plugin_lifecycle() {
     );
 
     // 8. Reinstall from the same mapped library.
-    let handle2 = plugin
+    let handle2 = component
         .install(
             &ctx,
             json!({ "greeting": "hola", "log": log_path.to_str().unwrap() }),
@@ -129,18 +130,19 @@ fn full_binary_plugin_lifecycle() {
 
 #[test]
 fn pending_until_host_provides_the_dependency() {
-    let plugin = Loader::build_and_load(fixture_dir(), &build_options()).expect("build and load");
+    let component =
+        Loader::build_and_load(fixture_dir(), &build_options()).expect("build and load");
     let ctx = Context::new();
     ctx.set_logger(Arc::new(cordis::DiscardLogger));
 
-    // No `database` anywhere: the plugin must wait, body unexecuted.
-    let handle = plugin
+    // No `database` anywhere: the component must wait, body unexecuted.
+    let handle = component
         .install(&ctx, json!({ "greeting": "hi" }))
         .expect("install");
     assert_eq!(handle.state(), FiberState::Pending);
     assert!(!ctx.has("greeter"), "body did not run");
 
-    // Dependency appears: the binary plugin activates reactively.
+    // Dependency appears: the binary component activates reactively.
     ctx.provide("database", Arc::new(json!({ "uri": "pg://late" })))
         .expect("provide");
     assert_eq!(handle.state(), FiberState::Active);
@@ -148,13 +150,14 @@ fn pending_until_host_provides_the_dependency() {
     handle.dispose();
 }
 
-/// The FFI `run_blocking` bridge: a binary plugin runs work on a
+/// The FFI `run_blocking` bridge: a binary component runs work on a
 /// framework thread, polls the cancellation token, and its completion
 /// callback (a framework-initiated call on the worker thread) appends
 /// to the log. Unload drains the in-flight unit before rollback.
 #[test]
-fn binary_plugin_blocking_work() {
-    let plugin = Loader::build_and_load(fixture_dir(), &build_options()).expect("build and load");
+fn binary_component_blocking_work() {
+    let component =
+        Loader::build_and_load(fixture_dir(), &build_options()).expect("build and load");
     let ctx = Context::new();
     ctx.set_logger(Arc::new(cordis::DiscardLogger));
     ctx.provide("database", Arc::new(json!({ "uri": "pg://host/test" })))
@@ -165,7 +168,7 @@ fn binary_plugin_blocking_work() {
     // Completion path: the work runs to its delay and delivers Done.
     let log_path = target.join("demo-work.log");
     let _ = std::fs::remove_file(&log_path);
-    let handle = plugin
+    let handle = component
         .install(
             &ctx,
             json!({ "greeting": "hi", "log": log_path.to_str().unwrap(), "work_delay_ms": 120 }),
@@ -190,7 +193,7 @@ fn binary_plugin_blocking_work() {
     // dispose, not waited out.
     let cancel_log = target.join("demo-work-cancel.log");
     let _ = std::fs::remove_file(&cancel_log);
-    let handle2 = plugin
+    let handle2 = component
         .install(
             &ctx,
             json!({ "greeting": "hi", "log": cancel_log.to_str().unwrap(), "work_delay_ms": 10_000 }),

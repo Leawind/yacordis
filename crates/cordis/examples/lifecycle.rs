@@ -1,4 +1,4 @@
-//! End-to-end lifecycle demo: install plugins at runtime, react to
+//! End-to-end lifecycle demo: install components at runtime, react to
 //! services appearing/disappearing, hot-update config, and uninstall
 //! everything cleanly — the temporal + spatial composability story.
 //!
@@ -15,12 +15,12 @@ struct Database {
 }
 
 /// A service provider: reads config, provides a typed service.
-struct DatabasePlugin;
-impl Plugin for DatabasePlugin {
+struct DatabaseComponent;
+impl Component for DatabaseComponent {
     fn name(&self) -> Option<&str> {
         Some("database")
     }
-    fn apply(&self, ctx: &Context, config: &Value) -> PluginResult {
+    fn apply(&self, ctx: &Context, config: &Value) -> ComponentResult {
         let uri = config["uri"].as_str().unwrap_or("memory://").to_owned();
         let pool = config["pool"].as_u64().unwrap_or(4) as u32;
         ctx.provide("database", Arc::new(Database { uri, pool }))?;
@@ -29,15 +29,15 @@ impl Plugin for DatabasePlugin {
 }
 
 /// A consumer: declares a reactive coeffect on "database".
-struct AppPlugin;
-impl Plugin for AppPlugin {
+struct AppComponent;
+impl Component for AppComponent {
     fn name(&self) -> Option<&str> {
         Some("app")
     }
     fn inject(&self) -> Inject {
         Inject::required(&["database"]).opt("cache")
     }
-    fn apply(&self, ctx: &Context, _config: &Value) -> PluginResult {
+    fn apply(&self, ctx: &Context, _config: &Value) -> ComponentResult {
         let db = ctx
             .get::<Database>("database")
             .expect("required dependency");
@@ -62,12 +62,12 @@ fn main() -> Result<(), CordisError> {
     ctx.set_logger(Arc::new(cordis::DiscardLogger));
 
     println!("1. install app before its dependency: stays pending");
-    let app = ctx.plugin(AppPlugin, json!(null))?;
+    let app = ctx.component(AppComponent, json!(null))?;
     println!("   app.state = {:?}", app.state());
 
     println!("2. install database: app activates reactively");
-    let db = ctx.plugin(
-        DatabasePlugin,
+    let db = ctx.component(
+        DatabaseComponent,
         json!({ "uri": "postgres://localhost", "pool": 8 }),
     )?;
     println!(
@@ -89,7 +89,7 @@ fn main() -> Result<(), CordisError> {
     println!("   app.state = {:?}", app.state());
 
     println!("6. reinstall: app comes back in place");
-    let db2 = ctx.plugin(DatabasePlugin, json!({ "uri": "postgres://localhost" }))?;
+    let db2 = ctx.component(DatabaseComponent, json!({ "uri": "postgres://localhost" }))?;
     println!("   app.state = {:?} again", app.state());
     drop(db2);
     Ok(())

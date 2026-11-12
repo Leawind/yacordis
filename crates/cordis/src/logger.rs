@@ -2,7 +2,7 @@
 //!
 //! The full logger (levels, scopes, exporters) is planned as a separate
 //! crate; core only needs a sink for framework diagnostics such as failed
-//! plugin loads and disposer errors.
+//! component loads and disposer errors.
 
 use std::fmt;
 use std::sync::{Arc, RwLock};

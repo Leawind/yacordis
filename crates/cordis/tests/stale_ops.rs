@@ -33,8 +33,8 @@ fn queued_reload_whose_premise_vanished_is_dropped() {
         let ctx = ctx.clone();
         move |_, _| {
             let p2 = ctx
-                .plugin(
-                    |ctx: &Context, _: &Value| -> PluginResult {
+                .component(
+                    |ctx: &Context, _: &Value| -> ComponentResult {
                         ctx.provide("a", Arc::new(json!({ "gen": 2 })))?;
                         Ok(())
                     },
@@ -69,8 +69,8 @@ fn queued_reload_whose_premise_vanished_is_dropped() {
     .expect("install consumer");
 
     let provider = ctx
-        .plugin(
-            |ctx: &Context, _: &Value| -> PluginResult {
+        .component(
+            |ctx: &Context, _: &Value| -> ComponentResult {
                 ctx.provide("a", Arc::new(json!({ "gen": 1 })))?;
                 Ok(())
             },
@@ -148,8 +148,8 @@ fn fibers_never_settle_active_without_required_deps() {
             for round in 0..CHURN_ROUNDS {
                 let providers = providers.clone();
                 let provider = ctx
-                    .plugin(
-                        move |ctx: &Context, _: &Value| -> PluginResult {
+                    .component(
+                        move |ctx: &Context, _: &Value| -> ComponentResult {
                             let id = ctx.fiber().id().unwrap_or(u64::MAX);
                             providers.lock().unwrap().insert(id, ctx.fiber());
                             ctx.provide("database", Arc::new(json!({ "provider": id })))?;

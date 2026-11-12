@@ -1,4 +1,4 @@
-//! Host-side handle table: u64 ids the plugin sees, real cordis objects
+//! Host-side handle table: u64 ids the component sees, real cordis objects
 //! the host keeps.
 
 use std::collections::HashMap;
@@ -27,7 +27,7 @@ impl HandleTable {
         }
     }
 
-    /// The process-global handle table (plugins are process-wide).
+    /// The process-global handle table (components are process-wide).
     pub(crate) fn global() -> &'static Self {
         static HANDLES: OnceLock<HandleTable> = OnceLock::new();
         HANDLES.get_or_init(Self::new)

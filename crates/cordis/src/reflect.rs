@@ -4,7 +4,7 @@
 //! each entry records the owning fiber so that withdrawing the provider
 //! reverts the registration and deactivates dependents. Typed access is
 //! a downcast on top of the raw channel, which is what crosses the
-//! dynamic-plugin ABI.
+//! dynamic-component ABI.
 //!
 //! Visibility is a single rule: an entry is resolvable from a context
 //! when the provider is an **active** fiber, or when the provider *is*
@@ -23,7 +23,7 @@ use crate::fiber::{Fiber, FiberState, ServiceImpl, drive_ops};
 
 /// Provide a service from `ctx`'s fiber, within `ctx`'s isolation group.
 /// The withdrawal disposer routes into the fiber's current effect batch
-/// (i.e. the plugin body that called us).
+/// (i.e. the component body that called us).
 pub(crate) fn provide(
     core: &Arc<Core>,
     ctx: &Context,
@@ -171,7 +171,11 @@ pub(crate) fn set_intercept(
     let handle = crate::effect::EffectHandle::new(format!("ctx.intercept({name})"));
     let cleanup_fiber = fiber.clone();
     handle.push(Box::new(move || {
-        if let Some(fiber) = cleanup_fiber.self_weak.get().and_then(std::sync::Weak::upgrade) {
+        if let Some(fiber) = cleanup_fiber
+            .self_weak
+            .get()
+            .and_then(std::sync::Weak::upgrade)
+        {
             fiber.intercepts.lock().unwrap().remove(&name);
         }
     }));
@@ -243,7 +247,7 @@ fn check_service_value(
     if diagnostics.is_empty() {
         return Ok(());
     }
-    Err(CordisError::PluginError(crate::error::PluginError(
+    Err(CordisError::ComponentError(crate::error::ComponentError(
         format!(
             "service `{name}` rejected: {}",
             diagnostics

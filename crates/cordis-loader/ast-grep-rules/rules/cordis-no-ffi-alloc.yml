@@ -3,7 +3,7 @@ language: Rust
 severity: error
 message: >
   Manual allocation across the C ABI breaks the shared-allocator rule (§4).
-  Allocate buffers through cordis_plugin_api (alloc_buffer/free_buffer).
+  Allocate buffers through cordis_component_api (alloc_buffer/free_buffer).
 rule:
   any:
     - pattern: libc::malloc($$$ARGS)

@@ -3,7 +3,7 @@
 //! A cordis context transformation carries its own inverse: setup code
 //! registers disposers while it runs, and the runtime guarantees they are
 //! executed in reverse registration order when the surrounding scope is
-//! unloaded. Event listeners, provided services and child plugins are all
+//! unloaded. Event listeners, provided services and child components are all
 //! built on this single mechanism.
 //!
 //! Nesting matches cordis v4: an effect registered while another effect's
@@ -18,10 +18,10 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 
+use crate::component::Component;
 use crate::context::Context;
-use crate::error::{CordisError, PluginError};
+use crate::error::{ComponentError, CordisError};
 use crate::fiber::Fiber;
-use crate::plugin::Plugin;
 
 /// A single cleanup function recorded by an effect.
 ///
@@ -199,13 +199,13 @@ pub(crate) fn attach_effect(fiber: &Arc<Fiber>, handle: EffectHandle) {
     }
 }
 
-/// Open an effect batch for a plugin body run and collect everything it
+/// Open an effect batch for a component body run and collect everything it
 /// records.
 pub(crate) struct ScopeGuard;
 
 impl ScopeGuard {
     pub(crate) fn collect<T>(fiber: &Arc<Fiber>, f: impl FnOnce() -> T) -> (EffectHandle, T) {
-        let handle = EffectHandle::new("plugin body");
+        let handle = EffectHandle::new("component body");
         SCOPES.with(|s| {
             s.borrow_mut().push(EffectScope {
                 fiber_id: fiber.id(),
@@ -226,19 +226,20 @@ impl ScopeGuard {
     }
 }
 
-/// Invoke a plugin body, converting panics into plugin errors so a broken
-/// plugin fails its own fiber.
-pub(crate) fn run_plugin_apply(
-    plugin: &Arc<dyn Plugin>,
+/// Invoke a component body, converting panics into component errors so a broken
+/// component fails its own fiber.
+pub(crate) fn run_component_apply(
+    component: &Arc<dyn Component>,
     ctx: &Context,
     config: &Value,
-) -> Result<(), PluginError> {
-    let result =
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| plugin.apply(ctx, config)));
+) -> Result<(), ComponentError> {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        component.apply(ctx, config)
+    }));
     match result {
         Ok(inner) => inner,
-        Err(payload) => Err(PluginError(
-            format!("plugin panicked: {}", panic_message(&payload)).into(),
+        Err(payload) => Err(ComponentError(
+            format!("component panicked: {}", panic_message(&payload)).into(),
         )),
     }
 }
@@ -252,7 +253,7 @@ impl Context {
     /// effect is disposed or its fiber unloads.
     ///
     /// A setup that returns `Err` has whatever it already recorded
-    /// reverted; the error surfaces as [`CordisError::PluginError`].
+    /// reverted; the error surfaces as [`CordisError::ComponentError`].
     ///
     /// Returns [`CordisError::InactiveContext`] if the current fiber is
     /// disposed or unloading.
@@ -287,7 +288,7 @@ impl Context {
             Ok(Err(err)) => {
                 // Setup failed: revert whatever it already recorded.
                 run_disposers(handle.take());
-                Err(CordisError::PluginError(PluginError(err)))
+                Err(CordisError::ComponentError(ComponentError(err)))
             }
             Err(payload) => {
                 run_disposers(handle.take());

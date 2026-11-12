@@ -11,7 +11,7 @@
 //! Listeners are string-keyed and receive a `serde_json::Value` payload;
 //! the [`Event`] trait adds a typed, compile-checked layer on top. All
 //! dispatches snapshot the hook list and invoke user code with no locks
-//! held, which is what keeps FFI plugin callbacks re-entrant. Removal is
+//! held, which is what keeps FFI component callbacks re-entrant. Removal is
 //! honored inside an active dispatch: each snapshot copy observes a
 //! shared liveness flag, so a listener removed mid-dispatch is skipped
 //! in the same cycle (cordis TS #242).
@@ -47,7 +47,9 @@ pub(crate) struct MiddlewareEntry {
     pub mw: Middleware,
 }
 
-pub(crate) const INTERNAL_PLUGIN: &str = "internal/plugin";
+/// Upstream cordis#307 renamed plugin→component but kept this event
+/// name, so the string stays as-is.
+pub(crate) const INTERNAL_COMPONENT: &str = "internal/plugin";
 pub(crate) const INTERNAL_STATUS: &str = "internal/status";
 pub(crate) const INTERNAL_SERVICE: &str = "internal/service";
 pub(crate) const INTERNAL_UPDATE: &str = "internal/update";
@@ -174,7 +176,7 @@ fn run_chain<'a>(
                 "cordis/waterfall",
                 &format!("middleware panicked: {message}; chain aborted (event: {name})"),
             );
-            Err(CordisError::PluginError(crate::error::PluginError(
+            Err(CordisError::ComponentError(crate::error::ComponentError(
                 format!("middleware panicked: {message}").into(),
             )))
         }
@@ -327,9 +329,9 @@ fn root_ctx(core: &Arc<Core>) -> Context {
     }
 }
 
-pub(crate) fn emit_plugin(core: &Arc<Core>, fiber: &Fiber) {
+pub(crate) fn emit_component(core: &Arc<Core>, fiber: &Fiber) {
     let ctx = root_ctx(core);
-    emit(core, &ctx, INTERNAL_PLUGIN, &json!([fiber.summary()]));
+    emit(core, &ctx, INTERNAL_COMPONENT, &json!([fiber.summary()]));
 }
 
 pub(crate) fn emit_replace(core: &Arc<Core>, fiber: &Fiber) {

@@ -1,17 +1,19 @@
 //! Timer service tests: fire-once, intervals, scope-release cancellation.
 
-use std::sync::{Arc, Mutex};
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use cordis::prelude::*;
-use cordis_timer::{CancelHandle, SleepOutcome, TimerContextExt, TimerPlugin};
+use cordis_timer::{CancelHandle, SleepOutcome, TimerComponent, TimerContextExt};
 use serde_json::{Value, json};
 
 fn install_timer() -> (Context, cordis::FiberHandle) {
     let ctx = Context::new();
     ctx.set_logger(Arc::new(cordis::DiscardLogger));
-    let handle = ctx.plugin(TimerPlugin, json!(null)).expect("install timer");
+    let handle = ctx
+        .component(TimerComponent, json!(null))
+        .expect("install timer");
     (ctx, handle)
 }
 
@@ -34,13 +36,13 @@ fn timeout_fires_once() {
     let (tx, rx) = mpsc::channel();
 
     let worker = ctx
-        .plugin(
-            move |ctx: &Context, _: &Value| -> PluginResult {
+        .component(
+            move |ctx: &Context, _: &Value| -> ComponentResult {
                 let tx = tx.clone();
                 ctx.set_timeout(Duration::from_millis(30), move || {
                     tx.send("fired").unwrap();
                 })
-                .map_err(PluginError::new)?;
+                .map_err(ComponentError::new)?;
                 Ok(())
             },
             json!(null),
@@ -57,13 +59,13 @@ fn unloading_the_fiber_cancels_pending_timeouts() {
     let (tx, rx) = mpsc::channel::<&'static str>();
 
     let worker = ctx
-        .plugin(
-            move |ctx: &Context, _: &Value| -> PluginResult {
+        .component(
+            move |ctx: &Context, _: &Value| -> ComponentResult {
                 let tx = tx.clone();
                 ctx.set_timeout(Duration::from_millis(500), move || {
                     tx.send("must not fire").unwrap();
                 })
-                .map_err(PluginError::new)?;
+                .map_err(ComponentError::new)?;
                 Ok(())
             },
             json!(null),
@@ -83,14 +85,14 @@ fn manual_cancel_works() {
     let (tx, rx) = mpsc::channel::<&'static str>();
 
     let worker = ctx
-        .plugin(
-            move |ctx: &Context, _: &Value| -> PluginResult {
+        .component(
+            move |ctx: &Context, _: &Value| -> ComponentResult {
                 let tx = tx.clone();
                 let handle = ctx
                     .set_timeout(Duration::from_millis(400), move || {
                         tx.send("fired").unwrap();
                     })
-                    .map_err(PluginError::new)?;
+                    .map_err(ComponentError::new)?;
                 handle.cancel();
                 assert!(!handle.is_pending());
                 Ok(())
@@ -111,8 +113,8 @@ fn interval_fires_repeatedly_until_cancelled() {
     let (tx, rx) = mpsc::channel::<u32>();
 
     let worker = ctx
-        .plugin(
-            move |ctx: &Context, _: &Value| -> PluginResult {
+        .component(
+            move |ctx: &Context, _: &Value| -> ComponentResult {
                 let tx = tx.clone();
                 let counter_for_callback = Arc::new(std::sync::atomic::AtomicU32::new(0));
                 // Cancel on the third tick, from inside the callback. A
@@ -137,7 +139,7 @@ fn interval_fires_repeatedly_until_cancelled() {
                             }
                         }
                     })
-                    .map_err(PluginError::new)?;
+                    .map_err(ComponentError::new)?;
                 *slot.lock().unwrap() = Some(handle);
                 Ok(())
             },
@@ -167,12 +169,12 @@ fn sleep_elapses_and_unload_wakes_it_early() {
     assert_eq!(outcome, SleepOutcome::Elapsed);
     assert!(start.elapsed() >= Duration::from_millis(35));
 
-    // A worker thread (spawned by a plugin body) sleeps on the fiber's
+    // A worker thread (spawned by a component body) sleeps on the fiber's
     // behalf; unloading the fiber wakes it with `Cancelled`.
     let (tx, rx) = mpsc::channel::<SleepOutcome>();
     let sleeper = ctx
-        .plugin(
-            move |ctx: &Context, _: &Value| -> PluginResult {
+        .component(
+            move |ctx: &Context, _: &Value| -> ComponentResult {
                 let ctx = ctx.clone();
                 let tx = tx.clone();
                 std::thread::spawn(move || {
@@ -205,7 +207,7 @@ fn sleep_elapses_and_unload_wakes_it_early() {
 }
 
 #[test]
-fn disposing_the_timer_plugin_shuts_the_wheel_down() {
+fn disposing_the_timer_component_shuts_the_wheel_down() {
     let (ctx, timer_fiber) = install_timer();
     assert!(ctx.has(cordis_timer::TIMER_SERVICE));
     timer_fiber.dispose();

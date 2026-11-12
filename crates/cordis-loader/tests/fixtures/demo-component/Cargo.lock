@@ -3,17 +3,17 @@
 version = 4
 
 [[package]]
-name = "cordis-plugin-api"
+name = "cordis-component-api"
 version = "0.1.0"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
-name = "demo-plugin"
+name = "demo-component"
 version = "0.1.0"
 dependencies = [
- "cordis-plugin-api",
+ "cordis-component-api",
  "serde_json",
 ]
 

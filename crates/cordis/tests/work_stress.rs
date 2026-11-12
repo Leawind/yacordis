@@ -45,14 +45,17 @@ fn concurrent_work_spawn_drain_cycles() {
                 let late = late.clone();
                 let completed = completed.clone();
                 let worker = group
-                    .plugin(
-                        move |ctx: &Context, _: &Value| -> PluginResult {
+                    .component(
+                        move |ctx: &Context, _: &Value| -> ComponentResult {
                             let (late, completed) = (late.clone(), completed.clone());
                             // Liveness marker: provide-disposers run AFTER
                             // the drain phase, so completions delivered
                             // during a correct drain still see it; a leak
                             // past rollback does not.
-                            ctx.provide("probe", Arc::new(json!({ "thread": thread, "cycle": cycle })))?;
+                            ctx.provide(
+                                "probe",
+                                Arc::new(json!({ "thread": thread, "cycle": cycle })),
+                            )?;
                             // A stubborn unit: ignores its token; dispose
                             // must block until it returns.
                             ctx.run_blocking(
@@ -71,12 +74,12 @@ fn concurrent_work_spawn_drain_cycles() {
                                     }
                                 },
                             )
-                            .map_err(PluginError::new)?;
+                            .map_err(ComponentError::new)?;
                             // A parked future: aborted at the await point
                             // by the drain phase.
                             ctx.spawn_future(
                                 "parked",
-                                std::future::pending::<Result<Value, PluginError>>(),
+                                std::future::pending::<Result<Value, ComponentError>>(),
                                 move |ctx, _| {
                                     completed.fetch_add(1, Ordering::Relaxed);
                                     if ctx.get::<Value>("probe").is_none() {
@@ -84,7 +87,7 @@ fn concurrent_work_spawn_drain_cycles() {
                                     }
                                 },
                             )
-                            .map_err(PluginError::new)?;
+                            .map_err(ComponentError::new)?;
                             Ok(())
                         },
                         json!(null),

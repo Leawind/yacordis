@@ -3,14 +3,14 @@
 use std::sync::Arc;
 
 use cordis::prelude::*;
-use cordis_logger::{LogLevel, LoggerContextExt, LoggerPlugin, MemorySink};
+use cordis_logger::{LogLevel, LoggerComponent, LoggerContextExt, MemorySink};
 use serde_json::{Value, json};
 
 #[test]
-fn records_flow_to_sinks_with_plugin_scopes() {
+fn records_flow_to_sinks_with_component_scopes() {
     let ctx = Context::new();
     ctx.set_logger(Arc::new(cordis::DiscardLogger));
-    ctx.plugin(LoggerPlugin, json!(null))
+    ctx.component(LoggerComponent, json!(null))
         .expect("install logger");
 
     let memory = Arc::new(MemorySink::new());
@@ -19,8 +19,8 @@ fn records_flow_to_sinks_with_plugin_scopes() {
     service.set_level(Some(LogLevel::Debug));
 
     let emitter = ctx
-        .plugin(
-            |ctx: &Context, _: &Value| -> PluginResult {
+        .component(
+            |ctx: &Context, _: &Value| -> ComponentResult {
                 ctx.log_info("hello from emitter");
                 ctx.log_debug("verbose detail");
                 Ok(())
@@ -43,7 +43,7 @@ fn records_flow_to_sinks_with_plugin_scopes() {
 fn level_threshold_filters_records() {
     let ctx = Context::new();
     ctx.set_logger(Arc::new(cordis::DiscardLogger));
-    ctx.plugin(LoggerPlugin, json!(null))
+    ctx.component(LoggerComponent, json!(null))
         .expect("install logger");
 
     let memory = Arc::new(MemorySink::new());
@@ -68,7 +68,7 @@ fn sink_removal_and_service_withdrawal() {
     let ctx = Context::new();
     ctx.set_logger(Arc::new(cordis::DiscardLogger));
     let logger_fiber = ctx
-        .plugin(LoggerPlugin, json!(null))
+        .component(LoggerComponent, json!(null))
         .expect("install logger");
 
     let memory = Arc::new(MemorySink::new());
@@ -82,7 +82,7 @@ fn sink_removal_and_service_withdrawal() {
     ctx.log_info("dropped");
     assert_eq!(memory.records().len(), 1, "sink removed");
 
-    // Withdrawing the logger plugin removes the service.
+    // Withdrawing the logger component removes the service.
     logger_fiber.dispose();
     assert!(ctx.logger().is_none());
     // Logging without the service is a no-op, not a panic.

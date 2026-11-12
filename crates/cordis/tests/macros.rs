@@ -1,29 +1,31 @@
-//! `#[plugin]` attribute macro: declarations flow into the runtime
+//! `#[component]` attribute macro: declarations flow into the runtime
 //! (gating via inject, cycle diagnostics via provides), apply delegates
 //! to the plain function, and the generated adapter keeps fiber
-//! semantics identical to hand-written plugins.
+//! semantics identical to hand-written components.
 
 use std::sync::Arc;
 
 use cordis::prelude::*;
 use serde_json::{Value, json};
 
-#[plugin(
+#[component(
     name = "database",
     inject(required = ["config"], optional = ["logger"]),
     provides = ["db"]
 )]
-fn database_plugin(ctx: &Context, _config: &Value) -> PluginResult {
+fn database_component(ctx: &Context, _config: &Value) -> ComponentResult {
     ctx.provide("db", Arc::new(json!({ "connected": true })))?;
     Ok(())
 }
 
 #[test]
-fn plugin_macro_declarations_gate_and_provide() {
+fn component_macro_declarations_gate_and_provide() {
     let ctx = Context::new();
 
-    // Missing required `config`: the plugin pends, body unexecuted.
-    let handle = ctx.plugin(DatabasePlugin, json!(null)).expect("install");
+    // Missing required `config`: the component pends, body unexecuted.
+    let handle = ctx
+        .component(DatabaseComponent, json!(null))
+        .expect("install");
     assert_eq!(handle.state(), FiberState::Pending);
     assert!(!ctx.has("db"));
 
@@ -38,56 +40,58 @@ fn plugin_macro_declarations_gate_and_provide() {
 
     // Declarations are introspectable (name + provides) without running
     // the body again: the cycle diagnostics see them.
-    let summaries = ctx.installed_plugins();
+    let summaries = ctx.installed_components();
     let summary = summaries
         .iter()
         .find(|s| s.name.as_deref() == Some("database"))
-        .expect("plugin summary");
+        .expect("component summary");
     assert!(!summary.fibers.is_empty());
 }
 
 #[test]
-fn plugin_macro_defaults_name_and_generates_pascal_struct() {
+fn component_macro_defaults_name_and_generates_pascal_struct() {
     let ctx = Context::new();
 
-    /// A plugin declared with no attributes: the struct name is the
-    /// PascalCase of the function name; the plugin name defaults to the
+    /// A component declared with no attributes: the struct name is the
+    /// PascalCase of the function name; the component name defaults to the
     /// function name.
-    #[plugin]
-    fn echo_tube(ctx: &Context, _config: &Value) -> PluginResult {
+    #[component]
+    fn echo_tube(ctx: &Context, _config: &Value) -> ComponentResult {
         ctx.provide("echo", Arc::new(json!("on")))?;
         Ok(())
     }
 
-    let handle = ctx.plugin(EchoTube, json!(null)).expect("install");
+    let handle = ctx.component(EchoTube, json!(null)).expect("install");
     assert!(handle.is_active());
-    let summaries = ctx.installed_plugins();
+    let summaries = ctx.installed_components();
     assert!(
-        summaries.iter().any(|s| s.name.as_deref() == Some("echo_tube")),
+        summaries
+            .iter()
+            .any(|s| s.name.as_deref() == Some("echo_tube")),
         "default name is the function name: {:?}",
         summaries.iter().map(|s| s.name.clone()).collect::<Vec<_>>()
     );
 }
 
 #[test]
-fn plugin_macro_provides_feed_cycle_diagnostics() {
+fn component_macro_provides_feed_cycle_diagnostics() {
     let ctx = Context::new();
 
-    // Two plugins whose declared provides close a loop among pending
+    // Two components whose declared provides close a loop among pending
     // required injects: the diagnostic must fire.
-    #[plugin(inject(required = ["a"]), provides = ["b"])]
-    fn needs_a(ctx: &Context, _config: &Value) -> PluginResult {
+    #[component(inject(required = ["a"]), provides = ["b"])]
+    fn needs_a(ctx: &Context, _config: &Value) -> ComponentResult {
         let _ = ctx;
         Ok(())
     }
-    #[plugin(inject(required = ["b"]), provides = ["a"])]
-    fn needs_b(ctx: &Context, _config: &Value) -> PluginResult {
+    #[component(inject(required = ["b"]), provides = ["a"])]
+    fn needs_b(ctx: &Context, _config: &Value) -> ComponentResult {
         let _ = ctx;
         Ok(())
     }
 
-    ctx.plugin(NeedsA, json!(null)).expect("install a");
-    ctx.plugin(NeedsB, json!(null)).expect("install b");
+    ctx.component(NeedsA, json!(null)).expect("install a");
+    ctx.component(NeedsB, json!(null)).expect("install b");
 
     let cycles = ctx.dependency_cycles();
     assert_eq!(cycles.len(), 1, "one stuck group: {cycles:?}");
@@ -99,26 +103,26 @@ fn plugin_macro_provides_feed_cycle_diagnostics() {
 /// side effects (the body never runs), a passing one is resolved
 /// (defaults filled) before the body sees it, and a violating update
 /// leaves the running config untouched. This locks the macro →
-/// `Plugin::schema` wiring (§6 item 4).
+/// `Component::schema` wiring (§6 item 4).
 #[test]
-fn plugin_macro_schema_gates_install_and_update() {
+fn component_macro_schema_gates_install_and_update() {
     let ctx = Context::new();
 
-    #[plugin(
+    #[component(
         name = "validated",
         schema = Schema::object()
             .req("uri", Schema::string())
             .opt_default("port", Schema::integer().at_least(1.0).at_most(65535.0), json!(5432))
             .build()
     )]
-    fn validated_plugin(ctx: &Context, config: &Value) -> PluginResult {
+    fn validated_component(ctx: &Context, config: &Value) -> ComponentResult {
         ctx.provide("db", Arc::new(config.clone()))?;
         Ok(())
     }
 
     // Violating config: the fiber fails at install, body never ran.
     let handle = ctx
-        .plugin(ValidatedPlugin, json!({ "uri": 42 }))
+        .component(ValidatedComponent, json!({ "uri": 42 }))
         .expect("install still returns a handle");
     assert_eq!(handle.state(), FiberState::Failed);
     assert!(
@@ -130,7 +134,7 @@ fn plugin_macro_schema_gates_install_and_update() {
 
     // Passing config: body runs with the resolved (default-filled) form.
     let handle = ctx
-        .plugin(ValidatedPlugin, json!({ "uri": "pg://x" }))
+        .component(ValidatedComponent, json!({ "uri": "pg://x" }))
         .expect("install ok");
     assert!(handle.is_active());
     assert_eq!(
@@ -147,7 +151,9 @@ fn plugin_macro_schema_gates_install_and_update() {
         Some(json!({ "uri": "pg://x", "port": 5432 }))
     );
 
-    handle.update(json!({ "uri": "pg://z" })).expect("valid update");
+    handle
+        .update(json!({ "uri": "pg://z" }))
+        .expect("valid update");
     assert_eq!(
         ctx.get::<Value>("db").map(|v| v.as_ref().clone()),
         Some(json!({ "uri": "pg://z", "port": 5432 }))

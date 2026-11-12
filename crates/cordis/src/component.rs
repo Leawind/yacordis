@@ -1,21 +1,21 @@
-//! Plugins: the unit of dynamic composition.
+//! Components: the unit of dynamic composition.
 //!
-//! A plugin is installed with [`Context::plugin`](crate::Context::plugin),
+//! A component is installed with [`Context::component`](crate::Context::component),
 //! receiving a scoped [`Context`](crate::Context) and its config.
-//! Everything the body registers — listeners, services, child plugins,
-//! raw effects — is reverted when the plugin is disposed. The same
-//! `Plugin` shape is used for native (statically linked) plugins and for
-//! dynamically loaded cdylib plugins (the loader adapts the latter into
+//! Everything the body registers — listeners, services, child components,
+//! raw effects — is reverted when the component is disposed. The same
+//! `Component` shape is used for native (statically linked) components and for
+//! dynamically loaded cdylib components (the loader adapts the latter into
 //! this trait).
 
 use serde_json::Value;
 
 use crate::context::Context;
-use crate::error::PluginResult;
+use crate::error::ComponentResult;
 
-/// Declared coeffects: which services this plugin requires to activate.
+/// Declared coeffects: which services this component requires to activate.
 ///
-/// The plugin body does not run until every `required` name is provided
+/// The component body does not run until every `required` name is provided
 /// by an active fiber; `optional` names never block activation and are
 /// resolved dynamically through `ctx.get`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -80,9 +80,9 @@ impl Inject {
     }
 }
 
-/// The unified plugin form. Both closures and dynamically loaded plugins
-/// are normalized into `Arc<dyn Plugin>`.
-pub trait Plugin: Send + Sync + 'static {
+/// The unified component form. Both closures and dynamically loaded components
+/// are normalized into `Arc<dyn Component>`.
+pub trait Component: Send + Sync + 'static {
     /// Human-readable name used in logs and error messages.
     fn name(&self) -> Option<&str> {
         None
@@ -95,7 +95,7 @@ pub trait Plugin: Send + Sync + 'static {
         Inject::none()
     }
 
-    /// Services this plugin declares it will provide once active.
+    /// Services this component declares it will provide once active.
     ///
     /// Purely declarative — the body is what actually provides. The
     /// runtime uses the declaration for dependency-cycle diagnostics:
@@ -116,37 +116,37 @@ pub trait Plugin: Send + Sync + 'static {
         None
     }
 
-    /// The plugin body. Called with a context scoped to this fiber and
-    /// the plugin config. Registrations made on the context during the
+    /// The component body. Called with a context scoped to this fiber and
+    /// the component config. Registrations made on the context during the
     /// call are tracked automatically and reverted on dispose.
-    fn apply(&self, ctx: &Context, config: &Value) -> PluginResult;
+    fn apply(&self, ctx: &Context, config: &Value) -> ComponentResult;
 }
 
-impl<F> Plugin for F
+impl<F> Component for F
 where
-    F: Fn(&Context, &Value) -> PluginResult + Send + Sync + 'static,
+    F: Fn(&Context, &Value) -> ComponentResult + Send + Sync + 'static,
 {
-    fn apply(&self, ctx: &Context, config: &Value) -> PluginResult {
+    fn apply(&self, ctx: &Context, config: &Value) -> ComponentResult {
         self(ctx, config)
     }
 }
 
-/// A plugin that only depends on services:
+/// A component that only depends on services:
 /// `ctx.inject(&["database"], |ctx| { … })`.
 pub(crate) struct InjectClosure<F> {
     pub(crate) inject: Inject,
     pub(crate) f: F,
 }
 
-impl<F> Plugin for InjectClosure<F>
+impl<F> Component for InjectClosure<F>
 where
-    F: Fn(&Context) -> PluginResult + Send + Sync + 'static,
+    F: Fn(&Context) -> ComponentResult + Send + Sync + 'static,
 {
     fn inject(&self) -> Inject {
         self.inject.clone()
     }
 
-    fn apply(&self, ctx: &Context, _config: &Value) -> PluginResult {
+    fn apply(&self, ctx: &Context, _config: &Value) -> ComponentResult {
         (self.f)(ctx)
     }
 }

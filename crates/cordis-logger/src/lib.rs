@@ -1,27 +1,27 @@
-//! Leveled logging service for cordis hosts and plugins.
+//! Leveled logging service for cordis hosts and components.
 //!
-//! Install [`LoggerPlugin`] to provide the `logger` service; anything
+//! Install [`LoggerComponent`] to provide the `logger` service; anything
 //! that can resolve it gains leveled logging with pluggable sinks, and
-//! plugin fibers get a natural scope (their plugin name) attached to
+//! component fibers get a natural scope (their component name) attached to
 //! every record.
 //!
 //! ```no_run
 //! use cordis::prelude::*;
-//! use cordis_logger::{LoggerContextExt, LoggerPlugin};
+//! use cordis_logger::{LoggerContextExt, LoggerComponent};
 //! use serde_json::json;
 //!
 //! let ctx = Context::new();
-//! ctx.plugin(LoggerPlugin, json!(null)).unwrap();
+//! ctx.component(LoggerComponent, json!(null)).unwrap();
 //!
 //! struct Worker;
-//! impl Plugin for Worker {
+//! impl Component for Worker {
 //!     fn name(&self) -> Option<&str> { Some("worker") }
-//!     fn apply(&self, ctx: &Context, _: &serde_json::Value) -> cordis::PluginResult {
+//!     fn apply(&self, ctx: &Context, _: &serde_json::Value) -> cordis::ComponentResult {
 //!         ctx.log_info("started");
 //!         Ok(())
 //!     }
 //! }
-//! # let _ = ctx.plugin(Worker, json!(null)).unwrap();
+//! # let _ = ctx.component(Worker, json!(null)).unwrap();
 //! ```
 
 #![deny(missing_docs)]
@@ -30,10 +30,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock, Weak};
 use std::time::SystemTime;
 
-use cordis::{Context, Plugin, PluginError, PluginResult};
+use cordis::{Component, ComponentError, ComponentResult, Context};
 use serde_json::Value;
 
-/// The name under which [`LoggerPlugin`] provides [`LoggerService`].
+/// The name under which [`LoggerComponent`] provides [`LoggerService`].
 pub const LOGGER_SERVICE: &str = "logger";
 
 /// Severity of a record, ordered from most to least severe.
@@ -65,7 +65,7 @@ impl LogLevel {
 pub struct LogRecord {
     /// Severity.
     pub level: LogLevel,
-    /// Emitting scope (usually the plugin's name).
+    /// Emitting scope (usually the component's name).
     pub scope: String,
     /// The message.
     pub message: String,
@@ -204,7 +204,7 @@ impl SinkHandle {
 
 /// Logging helpers for any context that resolves the `logger` service.
 pub trait LoggerContextExt {
-    /// The logging service, when [`LoggerPlugin`] is installed and active.
+    /// The logging service, when [`LoggerComponent`] is installed and active.
     fn logger(&self) -> Option<Arc<LoggerService>>;
 
     /// Emit a record scoped to the current fiber.
@@ -246,17 +246,17 @@ impl LoggerContextExt for Context {
 }
 
 /// Provides the `logger` service with a default [`StderrSink`].
-pub struct LoggerPlugin;
+pub struct LoggerComponent;
 
-impl Plugin for LoggerPlugin {
+impl Component for LoggerComponent {
     fn name(&self) -> Option<&str> {
         Some("logger")
     }
 
-    fn apply(&self, ctx: &Context, _config: &Value) -> PluginResult {
+    fn apply(&self, ctx: &Context, _config: &Value) -> ComponentResult {
         let service = LoggerService::new();
         ctx.provide(LOGGER_SERVICE, service.clone())
-            .map_err(PluginError::new)?;
+            .map_err(ComponentError::new)?;
         service.add_sink(StderrSink);
         Ok(())
     }

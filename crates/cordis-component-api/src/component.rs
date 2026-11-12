@@ -1,4 +1,4 @@
-//! The plugin contract, mirroring the native `cordis::Plugin` API.
+//! The component contract, mirroring the native `cordis::Component` API.
 
 use serde_json::Value;
 
@@ -6,7 +6,7 @@ use crate::context::Context;
 
 /// Declared service dependencies (reactive coeffects).
 ///
-/// The plugin body does not run until every `required` name is provided
+/// The component body does not run until every `required` name is provided
 /// by an active fiber; `optional` names never block activation.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Inject {
@@ -74,37 +74,37 @@ impl Inject {
     }
 }
 
-/// Errors thrown out of plugin code. Deliberately does **not**
+/// Errors thrown out of component code. Deliberately does **not**
 /// implement `std::error::Error` so the blanket `From<E: Error>` keeps
-/// `?` working in plugin bodies.
+/// `?` working in component bodies.
 #[derive(Debug)]
-pub struct PluginError(pub Box<dyn std::error::Error + Send + Sync>);
+pub struct ComponentError(pub Box<dyn std::error::Error + Send + Sync>);
 
-impl PluginError {
+impl ComponentError {
     /// Wrap any error.
     pub fn new(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> Self {
         Self(error.into())
     }
 }
 
-impl std::fmt::Display for PluginError {
+impl std::fmt::Display for ComponentError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(f)
     }
 }
 
-impl<E: std::error::Error + Send + Sync + 'static> From<E> for PluginError {
+impl<E: std::error::Error + Send + Sync + 'static> From<E> for ComponentError {
     fn from(error: E) -> Self {
         Self(Box::new(error))
     }
 }
 
-/// The result type of a plugin body.
-pub type PluginResult = Result<(), PluginError>;
+/// The result type of a component body.
+pub type ComponentResult = Result<(), ComponentError>;
 
-/// The plugin contract. The same shape as the native `cordis::Plugin`;
+/// The component contract. The same shape as the native `cordis::Component`;
 /// the loader adapts instances into the host's erased form.
-pub trait Plugin: Send + Sync + 'static {
+pub trait Component: Send + Sync + 'static {
     /// Human-readable name used in logs and error messages.
     fn name(&self) -> Option<&str> {
         None
@@ -117,16 +117,16 @@ pub trait Plugin: Send + Sync + 'static {
         Inject::none()
     }
 
-    /// The plugin body. Registrations made on the context during the
+    /// The component body. Registrations made on the context during the
     /// call are tracked automatically and reverted on dispose.
-    fn apply(&self, ctx: &Context, config: &Value) -> PluginResult;
+    fn apply(&self, ctx: &Context, config: &Value) -> ComponentResult;
 }
 
-impl<F> Plugin for F
+impl<F> Component for F
 where
-    F: Fn(&Context, &Value) -> PluginResult + Send + Sync + 'static,
+    F: Fn(&Context, &Value) -> ComponentResult + Send + Sync + 'static,
 {
-    fn apply(&self, ctx: &Context, config: &Value) -> PluginResult {
+    fn apply(&self, ctx: &Context, config: &Value) -> ComponentResult {
         self(ctx, config)
     }
 }

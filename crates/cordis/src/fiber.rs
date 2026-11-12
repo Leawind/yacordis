@@ -1,7 +1,7 @@
-//! Fibers: the lifecycle of one installed plugin instance.
+//! Fibers: the lifecycle of one installed component instance.
 //!
 //! Mirrors cordis v4's `Fiber`: a fiber owns the effects created by its
-//! plugin body, tracks its required dependencies, and derives an epoch
+//! component body, tracks its required dependencies, and derives an epoch
 //! (the list of dependency-owner fiber ids) that drives automatic
 //! activation and deactivation. With a synchronous core the v4
 //! LOADING/UNLOADING states collapse into direct transitions between
@@ -14,21 +14,21 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 
 use serde_json::{Value, json};
 
+use crate::component::{Component, Inject};
 use crate::context::{Context, Core};
-use crate::effect::{EffectHandle, ScopeGuard, run_plugin_apply};
-use crate::error::{CordisError, PluginError};
+use crate::effect::{EffectHandle, ScopeGuard, run_component_apply};
+use crate::error::{ComponentError, CordisError};
 use crate::events;
 use crate::logger::LogLevel;
-use crate::plugin::{Inject, Plugin};
 
 /// Lifecycle state of a fiber.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FiberState {
     /// Installed but not running: some required service is missing.
     Pending,
-    /// The plugin body ran and its effects are live.
+    /// The component body ran and its effects are live.
     Active,
-    /// The plugin body failed; effects were rolled back. Recoverable
+    /// The component body failed; effects were rolled back. Recoverable
     /// through `update()`.
     Failed,
     /// Disposed: effects reverted, deregistered from the registry.
@@ -112,15 +112,15 @@ pub(crate) struct FiberInner {
     /// Dependency signature: owner fiber ids of required deps in
     /// declaration order, or `None` when a required dep is missing.
     pub epoch: Option<Vec<u64>>,
-    pub error: Option<PluginError>,
-    /// The plugin this fiber runs. Held under the inner lock so
-    /// `replace_plugin` can swap it against concurrent `reload` reads.
-    pub plugin: Option<Arc<dyn Plugin>>,
-    /// Declared dependencies, cached from the plugin (re-cached by
-    /// `replace_plugin`).
+    pub error: Option<ComponentError>,
+    /// The component this fiber runs. Held under the inner lock so
+    /// `replace_component` can swap it against concurrent `reload` reads.
+    pub component: Option<Arc<dyn Component>>,
+    /// Declared dependencies, cached from the component (re-cached by
+    /// `replace_component`).
     pub inject: Inject,
-    /// Declared provides (`Plugin::provides`), used by dependency-cycle
-    /// diagnostics (re-cached by `replace_plugin`).
+    /// Declared provides (`Component::provides`), used by dependency-cycle
+    /// diagnostics (re-cached by `replace_component`).
     pub provides: Vec<String>,
     /// Checked dependency impls, keyed by name (labels are fixed per
     /// fiber, so the name suffices within one fiber).
@@ -215,7 +215,7 @@ pub(crate) enum Op {
 fn fresh_inner(
     state: FiberState,
     config: Value,
-    plugin: Option<Arc<dyn Plugin>>,
+    component: Option<Arc<dyn Component>>,
     inject: Inject,
     provides: Vec<String>,
 ) -> FiberInner {
@@ -228,7 +228,7 @@ fn fresh_inner(
             None
         },
         error: None,
-        plugin,
+        component,
         inject,
         provides,
         dep_store: HashMap::new(),
@@ -266,12 +266,12 @@ impl Fiber {
         core: &Arc<Core>,
         isolate: Arc<crate::context::IsolateMap>,
         parent: Weak<Fiber>,
-        plugin: Arc<dyn Plugin>,
+        component: Arc<dyn Component>,
         config: Value,
         name: String,
     ) -> Arc<Fiber> {
-        let inject = plugin.inject();
-        let provides = plugin.provides();
+        let inject = component.inject();
+        let provides = component.provides();
         Arc::new_cyclic(|weak| Fiber {
             id: core.next_fiber_id(),
             name,
@@ -282,7 +282,7 @@ impl Fiber {
             inner: Mutex::new(fresh_inner(
                 FiberState::Pending,
                 config,
-                Some(plugin),
+                Some(component),
                 inject,
                 provides,
             )),
@@ -374,13 +374,13 @@ impl Fiber {
     }
 
     /// All declared inject names (required and optional), in order.
-    /// Cached at install time and re-cached by `replace_plugin`;
-    /// `Plugin::inject` is never re-queried outside those two points.
+    /// Cached at install time and re-cached by `replace_component`;
+    /// `Component::inject` is never re-queried outside those two points.
     pub(crate) fn inject_names(&self) -> Vec<(String, bool)> {
         self.inner.lock().unwrap().inject.entries.clone()
     }
 
-    /// Service names declared via `Plugin::provides`, in order. Read by
+    /// Service names declared via `Component::provides`, in order. Read by
     /// dependency-cycle diagnostics.
     pub(crate) fn declared_provides(&self) -> Vec<String> {
         self.inner.lock().unwrap().provides.clone()
@@ -421,11 +421,7 @@ impl Fiber {
         if inner.disposed || inner.error.is_some() {
             return Vec::new();
         }
-        let required: Vec<String> = inner
-            .inject
-            .required_names()
-            .map(str::to_owned)
-            .collect();
+        let required: Vec<String> = inner.inject.required_names().map(str::to_owned).collect();
         let new_epoch = if required.iter().all(|n| inner.dep_store.contains_key(n)) {
             Some(
                 required
@@ -479,15 +475,15 @@ impl Fiber {
     /// The install-time effect body: announce, check deps, and activate
     /// when possible. The fiber must already be registered in its runtime.
     pub(crate) fn run_install_effect(&self, core: &Arc<Core>) {
-        events::emit_plugin(core, self);
+        events::emit_component(core, self);
         let names: Vec<String> = self.inject_names().iter().map(|(n, _)| n.clone()).collect();
         self.check_impls(core, &names);
         let ops = self.refresh();
         drive_ops(ops);
-        // Synchronous install contract: `ctx.plugin()` must not return
+        // Synchronous install contract: `ctx.component()` must not return
         // while this fiber's initial (or externally triggered) transition
         // is still in flight on another thread. Skipped when this install
-        // runs inside another fiber's op (cascading install in a plugin
+        // runs inside another fiber's op (cascading install in a component
         // body) — waiting there would wait for our own outer op.
         if !executing_op_on_this_thread() {
             core.quiesce();
@@ -501,23 +497,23 @@ impl Fiber {
         // Re-validate the dependency snapshot immediately before executing
         // the body: a queued Reload op can be stale by the time it runs
         // (a concurrent withdrawal may have emptied the store under us),
-        // and running then would activate a plugin whose required
+        // and running then would activate a component whose required
         // services are gone. Recomputing the epoch either confirms the
         // reload or hands control to the follow-up transitions.
         self.revalidate(core);
-        let (plugin, config) = {
+        let (component, config) = {
             let mut inner = self.inner.lock().unwrap();
             if inner.disposed || inner.error.is_some() || inner.epoch.is_none() {
                 return;
             }
             inner.provided.clear();
-            (inner.plugin.clone(), inner.config.clone())
+            (inner.component.clone(), inner.config.clone())
         };
-        let Some(plugin) = plugin else { return };
+        let Some(component) = component else { return };
         // Schema resolution runs before the body: a rejected config
         // leaves the fiber Failed with no side effects, an accepted one
         // is stored resolved (defaults filled) so restarts persist them.
-        let config = match plugin.schema() {
+        let config = match component.schema() {
             Some(schema) => match schema.resolve(&config) {
                 Ok(resolved) => {
                     let mut inner = self.inner.lock().unwrap();
@@ -540,9 +536,8 @@ impl Fiber {
                     );
                     {
                         let mut inner = self.inner.lock().unwrap();
-                        inner.error = Some(PluginError::new(format!(
-                            "config rejected: {message}"
-                        )));
+                        inner.error =
+                            Some(ComponentError::new(format!("config rejected: {message}")));
                         inner.epoch = None;
                     }
                     if let Some(old) = self.set_state(FiberState::Failed) {
@@ -557,8 +552,9 @@ impl Fiber {
         self.log(core, LogLevel::Debug, "reloading");
 
         let ctx = self.ctx().clone();
-        let (batch, result) =
-            ScopeGuard::collect(&self.strong(), || run_plugin_apply(&plugin, &ctx, &config));
+        let (batch, result) = ScopeGuard::collect(&self.strong(), || {
+            run_component_apply(&component, &ctx, &config)
+        });
 
         match result {
             Ok(()) => {
@@ -581,10 +577,10 @@ impl Fiber {
                 // eagerly so a Failed fiber has no live side effects.)
                 // Work units the body started are drained first, so their
                 // completion callbacks observe a live fiber and rollback
-                // runs without concurrent plugin code.
+                // runs without concurrent component code.
                 crate::work::drain_fiber_works(self);
                 batch.dispose();
-                self.log(core, LogLevel::Error, &format!("plugin failed: {err}"));
+                self.log(core, LogLevel::Error, &format!("component failed: {err}"));
                 {
                     let mut inner = self.inner.lock().unwrap();
                     inner.error = Some(err);
@@ -622,7 +618,7 @@ impl Fiber {
             inner.unloading = true;
             std::mem::take(&mut inner.batches)
         };
-        // Drain-before-rollback (§4.1 I1): no plugin code may run
+        // Drain-before-rollback (§4.1 I1): no component code may run
         // concurrently with the disposers below.
         crate::work::drain_fiber_works(self);
         lifecycle_trace::trace("unload-enter", self);
@@ -663,7 +659,7 @@ impl Fiber {
             inner.error = None;
         }
         lifecycle_trace::trace("dispose", self);
-        events::emit_plugin(core, self);
+        events::emit_component(core, self);
         crate::registry::remove_fiber(core, self);
         self.unload(core, false);
         true
@@ -688,17 +684,17 @@ impl Fiber {
         self.check_failed()
     }
 
-    /// Swap the plugin in place (upstream `registry.replace` /
+    /// Swap the component in place (upstream `registry.replace` /
     /// `fiber._replace`): the fiber keeps its identity — id, parent,
     /// config — and the new body re-runs through the normal
     /// unload/reload cascade, so dependents observe the service change.
     /// A previous failure is cleared, letting `replace` recover a
     /// `Failed` fiber. The runtime registration must already point at
-    /// the new plugin's runtime (`registry::move_fiber`).
-    pub(crate) fn replace_plugin(
+    /// the new component's runtime (`registry::move_fiber`).
+    pub(crate) fn replace_component(
         self: &Arc<Fiber>,
         core: &Arc<Core>,
-        new: Arc<dyn Plugin>,
+        new: Arc<dyn Component>,
     ) -> Result<(), CordisError> {
         {
             let mut inner = self.inner.lock().unwrap();
@@ -708,7 +704,7 @@ impl Fiber {
                     fiber: Some(self.name.clone()),
                 });
             }
-            inner.plugin = Some(new.clone());
+            inner.component = Some(new.clone());
             inner.inject = new.inject();
             inner.provides = new.provides();
             inner.error = None;
@@ -727,7 +723,7 @@ impl Fiber {
     pub(crate) fn check_failed(&self) -> Result<(), CordisError> {
         let inner = self.inner.lock().unwrap();
         match &inner.error {
-            Some(e) => Err(CordisError::PluginError(PluginError(
+            Some(e) => Err(CordisError::ComponentError(ComponentError(
                 format!("fiber `{}` failed: {}", self.name, e).into(),
             ))),
             None => Ok(()),

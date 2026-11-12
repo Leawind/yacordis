@@ -15,10 +15,10 @@ fn update_middleware_dies_with_its_fiber() {
     let calls: Arc<Mutex<Vec<&'static str>>> = Arc::default();
 
     let interceptor = ctx
-        .plugin(
+        .component(
             {
                 let calls = calls.clone();
-                move |ctx: &Context, _: &Value| -> PluginResult {
+                move |ctx: &Context, _: &Value| -> ComponentResult {
                     ctx.middleware("internal/update", {
                         let calls = calls.clone();
                         move |_, _config, next| {
@@ -34,11 +34,13 @@ fn update_middleware_dies_with_its_fiber() {
         .expect("install interceptor");
 
     let target = ctx
-        .plugin(|_: &Context, _: &Value| Ok(()), json!(null))
+        .component(|_: &Context, _: &Value| Ok(()), json!(null))
         .expect("install target");
 
     // Positive control: a live interceptor rewrites the update config.
-    target.update(json!({ "n": 1 })).expect("update while alive");
+    target
+        .update(json!({ "n": 1 }))
+        .expect("update while alive");
     assert_eq!(
         target.config().unwrap(),
         json!({ "marked": true }),
@@ -50,7 +52,9 @@ fn update_middleware_dies_with_its_fiber() {
 
     // After disposal the middleware is gone: config passes through and
     // the dead fiber's closure is never invoked again.
-    target.update(json!({ "n": 2 })).expect("update after dispose");
+    target
+        .update(json!({ "n": 2 }))
+        .expect("update after dispose");
     assert_eq!(
         calls.lock().unwrap().as_slice(),
         ["interceptor"],
@@ -71,11 +75,11 @@ fn prepended_update_middleware_runs_first() {
     let dispose_b: Arc<Mutex<Option<EffectHandle>>> = Arc::default();
 
     let _interceptor = ctx
-        .plugin(
+        .component(
             {
                 let calls = calls.clone();
                 let dispose_b = dispose_b.clone();
-                move |ctx: &Context, _: &Value| -> PluginResult {
+                move |ctx: &Context, _: &Value| -> ComponentResult {
                     ctx.middleware("internal/update", {
                         let calls = calls.clone();
                         move |_, config: Value, next| {
@@ -113,7 +117,7 @@ fn prepended_update_middleware_runs_first() {
         .expect("install interceptor");
 
     let target = ctx
-        .plugin(|_: &Context, _: &Value| Ok(()), json!(null))
+        .component(|_: &Context, _: &Value| Ok(()), json!(null))
         .expect("install target");
     target.update(json!({ "n": 1 })).expect("first update");
     assert_eq!(
@@ -122,7 +126,12 @@ fn prepended_update_middleware_runs_first() {
         "prepended entries run first, most recent prepend first"
     );
 
-    dispose_b.lock().unwrap().take().expect("b's handle").dispose();
+    dispose_b
+        .lock()
+        .unwrap()
+        .take()
+        .expect("b's handle")
+        .dispose();
     calls.lock().unwrap().clear();
     target.update(json!({ "n": 2 })).expect("second update");
     assert_eq!(

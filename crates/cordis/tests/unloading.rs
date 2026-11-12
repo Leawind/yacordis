@@ -21,7 +21,7 @@ fn registration_during_unload_is_rejected_without_leaks() {
     let fired: Arc<Mutex<Vec<String>>> = Arc::default();
 
     let mk_provider = |generation: u32| {
-        move |ctx: &Context, _: &Value| -> PluginResult {
+        move |ctx: &Context, _: &Value| -> ComponentResult {
             ctx.provide("db", Arc::new(json!({ "gen": generation })))?;
             Ok(())
         }
@@ -29,7 +29,7 @@ fn registration_during_unload_is_rejected_without_leaks() {
 
     // The provider goes in first so the consumer activates on install.
     let provider = ctx
-        .plugin(mk_provider(1), json!(null))
+        .component(mk_provider(1), json!(null))
         .expect("install provider");
 
     let consumer = {
@@ -78,13 +78,13 @@ fn registration_during_unload_is_rejected_without_leaks() {
                         ));
                         let r = {
                             let ctx = ctx.clone();
-                            ctx.plugin(
-                                move |_: &Context, _: &Value| -> PluginResult { Ok(()) },
+                            ctx.component(
+                                move |_: &Context, _: &Value| -> ComponentResult { Ok(()) },
                                 json!(null),
                             )
                         };
                         results.push((
-                            "plugin",
+                            "component",
                             matches!(&r, Err(CordisError::InactiveContext { .. })),
                         ));
                     }) as Disposer))
@@ -119,7 +119,7 @@ fn registration_during_unload_is_rejected_without_leaks() {
     // reactivation: exactly one `evt` listener (from the fresh body),
     // not two, and no `late` listener at all.
     let provider = ctx
-        .plugin(mk_provider(2), json!(null))
+        .component(mk_provider(2), json!(null))
         .expect("reinstall provider");
     assert!(consumer.wait_for(FiberState::Active, Duration::from_secs(5)));
     ctx.emit("evt", &json!(null));

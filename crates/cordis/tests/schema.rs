@@ -12,14 +12,18 @@ use serde_json::{Value, json};
 fn server_schema() -> Schema {
     Schema::object()
         .req("uri", Schema::string().min(4))
-        .opt_default("port", Schema::integer().at_least(1.0).at_most(65535.0), json!(8080))
+        .opt_default(
+            "port",
+            Schema::integer().at_least(1.0).at_most(65535.0),
+            json!(8080),
+        )
         .opt("tags", Schema::array(Schema::string()).min(1))
         .build()
 }
 
 /// Provides the resolved config it saw, so tests can observe what the
 /// body actually received.
-fn server_plugin(ctx: &Context, config: &Value) -> PluginResult {
+fn server_component(ctx: &Context, config: &Value) -> ComponentResult {
     ctx.provide("seen", Arc::new(config.clone()))?;
     Ok(())
 }
@@ -27,7 +31,8 @@ fn server_plugin(ctx: &Context, config: &Value) -> PluginResult {
 #[test]
 fn schema_rejects_invalid_config_at_install_without_side_effects() {
     let ctx = Context::new();
-    let handle = ctx.plugin(WithSchema(server_schema()), json!({ "uri": "" }))
+    let handle = ctx
+        .component(WithSchema(server_schema()), json!({ "uri": "" }))
         .expect("install");
     // Blank uri fails min(4); the fiber is Failed and provided nothing.
     assert_eq!(handle.state(), FiberState::Failed);
@@ -40,10 +45,7 @@ fn schema_rejects_invalid_config_at_install_without_side_effects() {
 fn schema_resolves_defaults_for_the_body_and_across_restarts() {
     let ctx = Context::new();
     let handle = ctx
-        .plugin(
-            WithSchema(server_schema()),
-            json!({ "uri": "pg://host" }),
-        )
+        .component(WithSchema(server_schema()), json!({ "uri": "pg://host" }))
         .expect("install");
     assert!(handle.is_active());
     // The body saw the default port filled in.
@@ -64,10 +66,7 @@ fn schema_resolves_defaults_for_the_body_and_across_restarts() {
 fn schema_rejects_invalid_update_and_keeps_previous_config() {
     let ctx = Context::new();
     let handle = ctx
-        .plugin(
-            WithSchema(server_schema()),
-            json!({ "uri": "pg://host" }),
-        )
+        .component(WithSchema(server_schema()), json!({ "uri": "pg://host" }))
         .expect("install");
     assert!(handle.is_active());
 
@@ -103,16 +102,33 @@ fn schema_reports_unknown_fields_and_type_mismatches() {
         .build();
     let diagnostics = schema.validate(&json!({ "mode": "turbo", "retries": -1, "extra": 1 }));
     let rendered: Vec<String> = diagnostics.iter().map(|d| d.to_string()).collect();
-    assert!(rendered.iter().any(|d| d.contains("mode") && d.contains("one of")), "{rendered:?}");
-    assert!(rendered.iter().any(|d| d.contains("retries") && d.contains("at least 0")), "{rendered:?}");
-    assert!(rendered.iter().any(|d| d.contains("unknown field `extra`")), "{rendered:?}");
+    assert!(
+        rendered
+            .iter()
+            .any(|d| d.contains("mode") && d.contains("one of")),
+        "{rendered:?}"
+    );
+    assert!(
+        rendered
+            .iter()
+            .any(|d| d.contains("retries") && d.contains("at least 0")),
+        "{rendered:?}"
+    );
+    assert!(
+        rendered.iter().any(|d| d.contains("unknown field `extra`")),
+        "{rendered:?}"
+    );
 
     // allow_unknown silences typo reports but keeps real violations.
     let lenient = Schema::object()
         .req("mode", Schema::enum_of([json!("fast"), json!("safe")]))
         .allow_unknown()
         .build();
-    assert!(lenient.validate(&json!({ "mode": "fast", "extra": 1 })).is_empty());
+    assert!(
+        lenient
+            .validate(&json!({ "mode": "fast", "extra": 1 }))
+            .is_empty()
+    );
 
     // Root-level type mismatch (config root is not an object).
     let diagnostics = lenient.validate(&json!("not an object"));
@@ -120,9 +136,10 @@ fn schema_reports_unknown_fields_and_type_mismatches() {
 }
 
 #[test]
-fn plugins_without_schema_are_unaffected() {
+fn components_without_schema_are_unaffected() {
     let ctx = Context::new();
-    let handle = ctx.plugin(|_: &Context, _: &Value| Ok(()), json!({ "anything": true }))
+    let handle = ctx
+        .component(|_: &Context, _: &Value| Ok(()), json!({ "anything": true }))
         .expect("install");
     assert!(handle.is_active());
 }
@@ -131,14 +148,14 @@ fn plugins_without_schema_are_unaffected() {
 /// no schema support of their own).
 struct WithSchema(Schema);
 
-impl cordis::Plugin for WithSchema {
+impl cordis::Component for WithSchema {
     fn name(&self) -> Option<&str> {
         Some("schema-server")
     }
     fn schema(&self) -> Option<Schema> {
         Some(self.0.clone())
     }
-    fn apply(&self, ctx: &Context, config: &Value) -> PluginResult {
-        server_plugin(ctx, config)
+    fn apply(&self, ctx: &Context, config: &Value) -> ComponentResult {
+        server_component(ctx, config)
     }
 }

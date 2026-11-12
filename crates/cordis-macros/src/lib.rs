@@ -1,19 +1,19 @@
-//! Attribute macros for declaring cordis plugins from plain functions.
+//! Attribute macros for declaring cordis components from plain functions.
 //!
 //! ```
-//! # use cordis_macros::plugin;
+//! # use cordis_macros::component;
 //! # use cordis::Schema;
-//! #[plugin(
+//! #[component(
 //!     name = "database",
 //!     inject(required = ["config"], optional = ["logger"]),
 //!     provides = ["db"],
 //!     schema = Schema::object().req("uri", Schema::string()).build()
 //! )]
-//! fn database(ctx: &cordis::Context, config: &serde_json::Value) -> cordis::PluginResult {
+//! fn database(ctx: &cordis::Context, config: &serde_json::Value) -> cordis::ComponentResult {
 //!     ctx.provide("db", std::sync::Arc::new(config.clone()))?;
 //!     Ok(())
 //! }
-//! // `Database` is a struct implementing `cordis::Plugin`.
+//! // `Database` is a struct implementing `cordis::Component`.
 //! # let _ = Database;
 //! ```
 //!
@@ -23,8 +23,8 @@
 //! before the body runs. `schema` is an arbitrary expression evaluating to
 //! [`cordis::Schema`] — install and update then validate and resolve
 //! the config before the body runs (see design.md §6 item 4). The
-//! plugin struct inherits the function's visibility and its
-//! `Plugin::name` defaults to the function name.
+//! component struct inherits the function's visibility and its
+//! `Component::name` defaults to the function name.
 
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
@@ -34,7 +34,7 @@ use syn::{ItemFn, LitStr, Token, parse_macro_input};
 
 /// Attribute arguments: `name = "…"`, `required = […]`, `optional = […]`,
 /// `provides = […]`, `schema = <expr>`.
-struct PluginArgs {
+struct ComponentArgs {
     name: Option<LitStr>,
     required: Vec<LitStr>,
     optional: Vec<LitStr>,
@@ -42,7 +42,7 @@ struct PluginArgs {
     schema: Option<syn::Expr>,
 }
 
-impl syn::parse::Parse for PluginArgs {
+impl syn::parse::Parse for ComponentArgs {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let mut args = Self {
             name: None,
@@ -88,7 +88,9 @@ impl syn::parse::Parse for PluginArgs {
                             other => {
                                 return Err(syn::Error::new(
                                     nested.span(),
-                                    format!("unknown inject key `{other}`; expected required, optional"),
+                                    format!(
+                                        "unknown inject key `{other}`; expected required, optional"
+                                    ),
                                 ));
                             }
                         }
@@ -100,7 +102,9 @@ impl syn::parse::Parse for PluginArgs {
                 other => {
                     return Err(syn::Error::new(
                         key.span(),
-                        format!("unknown #[plugin] key `{other}`; expected name, inject, required, optional, provides, schema"),
+                        format!(
+                            "unknown #[component] key `{other}`; expected name, inject, required, optional, provides, schema"
+                        ),
                     ));
                 }
             }
@@ -133,16 +137,16 @@ fn pascal_case(snake: &str) -> String {
         .collect()
 }
 
-/// Declare a cordis plugin from a plain function. See the crate docs.
+/// Declare a cordis component from a plain function. See the crate docs.
 #[proc_macro_attribute]
-pub fn plugin(args: TokenStream, item: TokenStream) -> TokenStream {
-    let attr_args = parse_macro_input!(args as PluginArgs);
+pub fn component(args: TokenStream, item: TokenStream) -> TokenStream {
+    let attr_args = parse_macro_input!(args as ComponentArgs);
     let func = parse_macro_input!(item as ItemFn);
 
     if func.sig.inputs.len() != 2 {
         return syn::Error::new(
             func.sig.inputs.span(),
-            "#[plugin] functions take exactly (ctx: &cordis::Context, config: &serde_json::Value)",
+            "#[component] functions take exactly (ctx: &cordis::Context, config: &serde_json::Value)",
         )
         .to_compile_error()
         .into();
@@ -150,7 +154,7 @@ pub fn plugin(args: TokenStream, item: TokenStream) -> TokenStream {
     if func.sig.asyncness.is_some() {
         return syn::Error::new(
             func.sig.asyncness.span(),
-            "#[plugin] functions are synchronous (see design.md §2.6); use ctx.run_blocking for work off the scheduling thread",
+            "#[component] functions are synchronous (see design.md §2.6); use ctx.run_blocking for work off the scheduling thread",
         )
         .to_compile_error()
         .into();
@@ -159,50 +163,37 @@ pub fn plugin(args: TokenStream, item: TokenStream) -> TokenStream {
     let vis = &func.vis;
     let fn_name = &func.sig.ident;
     let struct_name = format_ident!("{}", pascal_case(&fn_name.to_string()));
-    let plugin_name = attr_args
+    let component_name = attr_args
         .name
         .clone()
         .unwrap_or_else(|| LitStr::new(&fn_name.to_string(), fn_name.span()));
     // Evaluate the literals at expansion time: interpolating `LitStr`
     // directly yields a string-literal token, so `.value()` cannot be
     // applied to it inside the generated code.
-    let required: Vec<String> = attr_args
-        .required
-        .iter()
-        .map(|lit| lit.value())
-        .collect();
-    let optional: Vec<String> = attr_args
-        .optional
-        .iter()
-        .map(|lit| lit.value())
-        .collect();
-    let provides: Vec<String> = attr_args
-        .provides
-        .iter()
-        .map(|lit| lit.value())
-        .collect();
+    let required: Vec<String> = attr_args.required.iter().map(|lit| lit.value()).collect();
+    let optional: Vec<String> = attr_args.optional.iter().map(|lit| lit.value()).collect();
+    let provides: Vec<String> = attr_args.provides.iter().map(|lit| lit.value()).collect();
 
     // With `schema = <expr>`, the declared config schema rides along on
     // the adapter: install/update validate and resolve the config before
     // the body ever runs (§6 item 4), with zero macro magic at runtime.
-    let schema_impl = attr_args
-        .schema
-        .as_ref()
-        .map(|expr| quote! {
+    let schema_impl = attr_args.schema.as_ref().map(|expr| {
+        quote! {
             fn schema(&self) -> Option<::cordis::Schema> {
                 Some(#expr)
             }
-        });
+        }
+    });
 
     let expanded = quote! {
         #func
 
-        #[doc = concat!("Plugin adapter generated by `#[plugin]` for `", stringify!(#fn_name), "`.")]
+        #[doc = concat!("Component adapter generated by `#[component]` for `", stringify!(#fn_name), "`.")]
         #vis struct #struct_name;
 
-        impl ::cordis::Plugin for #struct_name {
+        impl ::cordis::Component for #struct_name {
             fn name(&self) -> Option<&str> {
-                Some(#plugin_name)
+                Some(#component_name)
             }
 
             fn inject(&self) -> ::cordis::Inject {
@@ -218,7 +209,7 @@ pub fn plugin(args: TokenStream, item: TokenStream) -> TokenStream {
 
             #schema_impl
 
-            fn apply(&self, ctx: &::cordis::Context, config: &::cordis::serde_json::Value) -> ::cordis::PluginResult {
+            fn apply(&self, ctx: &::cordis::Context, config: &::cordis::serde_json::Value) -> ::cordis::ComponentResult {
                 #fn_name(ctx, config)
             }
         }

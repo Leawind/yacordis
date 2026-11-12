@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/cordis", "crates/cordis-macros", "crates/cordis-plugin-api", "crates/cordis-loader", "crates/cordis-timer", "crates/cordis-logger"]
+members = ["crates/cordis", "crates/cordis-macros", "crates/cordis-component-api", "crates/cordis-loader", "crates/cordis-timer", "crates/cordis-logger"]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,7 +11,7 @@ license = "MIT"
 [workspace.dependencies]
 cordis = { path = "crates/cordis" }
 cordis-macros = { path = "crates/cordis-macros" }
-cordis-plugin-api = { path = "crates/cordis-plugin-api" }
+cordis-component-api = { path = "crates/cordis-component-api" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

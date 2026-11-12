@@ -1,4 +1,4 @@
-//! Loading prebuilt cdylib plugins and adapting them into the core.
+//! Loading prebuilt cdylib components and adapting them into the core.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -6,20 +6,20 @@ use std::sync::Arc;
 use libloading::Library;
 use serde_json::Value;
 
-use cordis_plugin_api::{ABI_VERSION, Callback, RawBuffer};
+use cordis_component_api::{ABI_VERSION, Callback, RawBuffer};
 
-use crate::adapter::{FfiPlugin, SendCallback};
+use crate::adapter::{FfiComponent, SendCallback};
 
-/// Why a plugin could not be installed.
+/// Why a component could not be installed.
 #[derive(Debug)]
 pub enum LoadError {
     /// The file could not be opened as a shared library.
     Library(libloading::Error),
     /// A required cordis export symbol is missing.
     Symbol(&'static str, libloading::Error),
-    /// The plugin's `cordis_abi_version` differs from the host's.
+    /// The component's `cordis_abi_version` differs from the host's.
     AbiMismatch {
-        /// The version the plugin reported.
+        /// The version the component reported.
         found: u32,
     },
     /// The exported manifest is missing fields or is not valid JSON.
@@ -33,15 +33,15 @@ pub enum LoadError {
 impl std::fmt::Display for LoadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LoadError::Library(e) => write!(f, "cannot load plugin library: {e}"),
+            LoadError::Library(e) => write!(f, "cannot load component library: {e}"),
             LoadError::Symbol(name, e) => {
                 write!(f, "missing cordis export `{name}`: {e}")
             }
             LoadError::AbiMismatch { found } => write!(
                 f,
-                "plugin ABI version {found} does not match host version {ABI_VERSION}; rebuild the plugin"
+                "component ABI version {found} does not match host version {ABI_VERSION}; rebuild the component"
             ),
-            LoadError::Manifest(why) => write!(f, "invalid plugin manifest: {why}"),
+            LoadError::Manifest(why) => write!(f, "invalid component manifest: {why}"),
             LoadError::Build(stderr) => {
                 write!(f, "cargo build failed:\n{stderr}")
             }
@@ -59,10 +59,10 @@ impl std::error::Error for LoadError {
     }
 }
 
-/// A parsed plugin manifest.
+/// A parsed component manifest.
 #[derive(Debug, Clone)]
-pub struct PluginManifest {
-    /// Human-readable plugin name, if the plugin declares one.
+pub struct ComponentManifest {
+    /// Human-readable component name, if the component declares one.
     pub name: Option<String>,
     /// Required service names (they gate activation).
     pub required: Vec<String>,
@@ -70,28 +70,28 @@ pub struct PluginManifest {
     pub optional: Vec<String>,
 }
 
-/// One dynamically loaded plugin binary.
+/// One dynamically loaded component binary.
 ///
 /// The library stays mapped for the life of the process (see
 /// `docs/design.md` §4 for the unload policy); every install of this
-/// [`PluginLibrary`] shares the same mapped code and can be disposed and
+/// [`ComponentLibrary`] shares the same mapped code and can be disposed and
 /// reinstalled independently.
-pub struct PluginLibrary {
+pub struct ComponentLibrary {
     #[allow(dead_code)]
     library: &'static Library,
-    /// Parsed from the plugin's exported manifest.
-    pub manifest: PluginManifest,
-    adapter: Arc<FfiPlugin>,
+    /// Parsed from the component's exported manifest.
+    pub manifest: ComponentManifest,
+    adapter: Arc<FfiComponent>,
 }
 
-// SAFETY: the plugin ABI contract requires closures and state to be
+// SAFETY: the component ABI contract requires closures and state to be
 // usable from any thread; the Library handle is process-global.
-unsafe impl Send for PluginLibrary {}
-unsafe impl Sync for PluginLibrary {}
+unsafe impl Send for ComponentLibrary {}
+unsafe impl Sync for ComponentLibrary {}
 
-impl PluginLibrary {
-    /// Load and verify a plugin binary. Loading is trusted code
-    /// execution — only install plugins you could have required anyway.
+impl ComponentLibrary {
+    /// Load and verify a component binary. Loading is trusted code
+    /// execution — only install components you could have required anyway.
     ///
     /// # Safety
     /// This runs the library's constructors and links its symbols; a
@@ -118,15 +118,15 @@ impl PluginLibrary {
 
         let manifest = unsafe {
             library
-                .get::<extern "C" fn() -> RawBuffer>(b"cordis_plugin_manifest\0")
-                .map_err(|e| LoadError::Symbol("cordis_plugin_manifest", e))?
+                .get::<extern "C" fn() -> RawBuffer>(b"cordis_component_manifest\0")
+                .map_err(|e| LoadError::Symbol("cordis_component_manifest", e))?
         };
         let manifest_buffer = manifest();
-        let manifest_text = cordis_plugin_api::buffer_to_string(manifest_buffer);
-        cordis_plugin_api::free_buffer(manifest_buffer);
+        let manifest_text = cordis_component_api::buffer_to_string(manifest_buffer);
+        cordis_component_api::free_buffer(manifest_buffer);
         let doc: Value =
             serde_json::from_str(&manifest_text).map_err(|e| LoadError::Manifest(e.to_string()))?;
-        let parsed = PluginManifest {
+        let parsed = ComponentManifest {
             name: doc["name"].as_str().map(str::to_owned),
             required: string_list(&doc["inject"]["required"]),
             optional: string_list(&doc["inject"]["optional"]),
@@ -134,8 +134,8 @@ impl PluginLibrary {
 
         let apply = unsafe {
             library
-                .get::<extern "C" fn() -> Callback>(b"cordis_plugin_apply\0")
-                .map_err(|e| LoadError::Symbol("cordis_plugin_apply", e))?
+                .get::<extern "C" fn() -> Callback>(b"cordis_component_apply\0")
+                .map_err(|e| LoadError::Symbol("cordis_component_apply", e))?
         }();
 
         let inject = {
@@ -148,7 +148,7 @@ impl PluginLibrary {
             }
             inject
         };
-        let adapter = Arc::new(FfiPlugin::new(
+        let adapter = Arc::new(FfiComponent::new(
             parsed.name.clone(),
             inject,
             SendCallback::new(apply),
@@ -161,19 +161,19 @@ impl PluginLibrary {
         })
     }
 
-    /// The erased plugin: pass to `ctx.plugin_dyn` or install directly.
+    /// The erased component: pass to `ctx.component_dyn` or install directly.
     #[must_use]
-    pub fn plugin(&self) -> Arc<dyn cordis::Plugin> {
+    pub fn component(&self) -> Arc<dyn cordis::Component> {
         self.adapter.clone()
     }
 
-    /// Install into a context (the plugin's `inject` gates activation).
+    /// Install into a context (the component's `inject` gates activation).
     pub fn install(
         &self,
         ctx: &cordis::Context,
         config: impl Into<serde_json::Value>,
     ) -> Result<cordis::FiberHandle, cordis::CordisError> {
-        ctx.plugin_dyn(self.plugin(), config)
+        ctx.component_dyn(self.component(), config)
     }
 }
 
@@ -202,13 +202,13 @@ pub struct BuildOptions {
     pub lint: bool,
 }
 
-/// Entry points for obtaining [`PluginLibrary`] binaries.
+/// Entry points for obtaining [`ComponentLibrary`] binaries.
 pub struct Loader;
 
 /// Bundled ast-grep configuration for the unload-contract rules (§4.1).
 const LINT_CONFIG: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/ast-grep-rules/sgconfig.yml");
 
-/// Run the bundled ast-grep unload-contract lint over a plugin source
+/// Run the bundled ast-grep unload-contract lint over a component source
 /// tree. Returns the combined findings (rejecting the build) when the
 /// linter is installed and reports violations; returns `Ok` when
 /// ast-grep is unavailable (the lint is best-effort).
@@ -235,14 +235,14 @@ pub fn lint_source(source_dir: impl AsRef<Path>) -> Result<(), String> {
 }
 
 impl Loader {
-    /// Load a prebuilt cdylib plugin. See [`PluginLibrary::load`] for
+    /// Load a prebuilt cdylib component. See [`ComponentLibrary::load`] for
     /// the trust model.
-    pub fn load_file(path: impl AsRef<Path>) -> Result<PluginLibrary, LoadError> {
-        // SAFETY: delegated to the caller's choice of plugin binary.
-        unsafe { PluginLibrary::load(path.as_ref()) }
+    pub fn load_file(path: impl AsRef<Path>) -> Result<ComponentLibrary, LoadError> {
+        // SAFETY: delegated to the caller's choice of component binary.
+        unsafe { ComponentLibrary::load(path.as_ref()) }
     }
 
-    /// Build a plugin crate from source and load the resulting cdylib.
+    /// Build a component crate from source and load the resulting cdylib.
     ///
     /// This is the developer path — running `cargo` inside the host
     /// process — mirroring cordis's write-and-build story; end users
@@ -251,12 +251,12 @@ impl Loader {
     pub fn build_and_load(
         source_dir: impl AsRef<Path>,
         options: &BuildOptions,
-    ) -> Result<PluginLibrary, LoadError> {
+    ) -> Result<ComponentLibrary, LoadError> {
         let path = Self::build(source_dir, options)?;
         Self::load_file(path)
     }
 
-    /// Build a plugin crate, returning the cdylib artifact path.
+    /// Build a component crate, returning the cdylib artifact path.
     pub fn build(
         source_dir: impl AsRef<Path>,
         options: &BuildOptions,
@@ -310,26 +310,35 @@ impl Loader {
             }
         }
         artifact.ok_or_else(|| {
-            LoadError::Build(
-                "cargo produced no cdylib artifact; set crate-type = [\"cdylib\"]".into(),
-            )
+            let detail = diagnostics.trim();
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            LoadError::Build(format!(
+                "cargo produced no cdylib artifact; set crate-type = [\"cdylib\"]{}",
+                if detail.is_empty() && stderr.trim().is_empty() {
+                    String::new()
+                } else if detail.is_empty() {
+                    format!("\n{stderr}")
+                } else {
+                    format!("\n{detail}")
+                }
+            ))
         })
     }
 
-    /// Download a plugin binary into `cache_dir` and return its path.
+    /// Download a component binary into `cache_dir` and return its path.
     /// Requires the `download` feature.
     #[cfg(feature = "download")]
     pub fn fetch(url: &str, cache_dir: impl AsRef<Path>) -> Result<PathBuf, LoadError> {
         let response = ureq::get(url)
             .call()
             .map_err(|e| LoadError::Fetch(e.to_string()))?;
-        let file_name = url.rsplit('/').next().unwrap_or("plugin.so");
+        let file_name = url.rsplit('/').next().unwrap_or("component.so");
         std::fs::create_dir_all(cache_dir.as_ref())
             .map_err(|e| LoadError::Fetch(format!("cannot create cache dir: {e}")))?;
         let path = cache_dir.as_ref().join(file_name);
         let mut reader = response.into_reader();
         let mut file = std::fs::File::create(&path)
-            .map_err(|e| LoadError::Fetch(format!("cannot create plugin file: {e}")))?;
+            .map_err(|e| LoadError::Fetch(format!("cannot create component file: {e}")))?;
         std::io::copy(&mut reader, &mut file)
             .map_err(|e| LoadError::Fetch(format!("download interrupted: {e}")))?;
         Ok(path)

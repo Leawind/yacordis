@@ -3,7 +3,7 @@
 //!
 //! A group is reported only when its members are genuinely stuck: every
 //! edge points at a *missing* dependency, so a pending fiber behind a
-//! healthy provider is never part of a report. `Plugin::provides`
+//! healthy provider is never part of a report. `Component::provides`
 //! declarations are what close a loop; bodies that never fulfill their
 //! declaration are documented as a false-report risk, not tested here.
 
@@ -30,14 +30,14 @@ impl Logger for Capture {
     }
 }
 
-/// A plugin that only declares: name, required injects, provides.
+/// A component that only declares: name, required injects, provides.
 struct Declared {
     name: &'static str,
     inject: Inject,
     provides: Vec<&'static str>,
 }
 
-impl Plugin for Declared {
+impl Component for Declared {
     fn name(&self) -> Option<&str> {
         Some(self.name)
     }
@@ -47,7 +47,7 @@ impl Plugin for Declared {
     fn provides(&self) -> Vec<String> {
         self.provides.iter().map(|s| (*s).to_owned()).collect()
     }
-    fn apply(&self, _ctx: &Context, _config: &Value) -> PluginResult {
+    fn apply(&self, _ctx: &Context, _config: &Value) -> ComponentResult {
         Ok(())
     }
 }
@@ -61,7 +61,7 @@ fn declared_cycle_is_reported_once_and_clears_when_broken() {
     // A needs b, B needs c, C needs a — each claims to provide what the
     // next one needs. Nothing can ever run.
     let a = ctx
-        .plugin(
+        .component(
             Declared {
                 name: "A",
                 inject: Inject::required(&["b"]),
@@ -71,7 +71,7 @@ fn declared_cycle_is_reported_once_and_clears_when_broken() {
         )
         .expect("install A");
     let b = ctx
-        .plugin(
+        .component(
             Declared {
                 name: "B",
                 inject: Inject::required(&["c"]),
@@ -81,7 +81,7 @@ fn declared_cycle_is_reported_once_and_clears_when_broken() {
         )
         .expect("install B");
     let c = ctx
-        .plugin(
+        .component(
             Declared {
                 name: "C",
                 inject: Inject::required(&["a"]),
@@ -138,7 +138,7 @@ fn declared_cycle_is_reported_once_and_clears_when_broken() {
     // (never fulfilled) "b"; a fresh fiber claiming "b" while needing
     // "a" closes a new loop with A.
     let d = ctx
-        .plugin(
+        .component(
             Declared {
                 name: "D",
                 inject: Inject::required(&["a"]),
@@ -158,7 +158,7 @@ fn declared_cycle_is_reported_once_and_clears_when_broken() {
 fn self_claim_on_own_missing_dependency_is_reported() {
     let ctx = Context::new();
     let solo = ctx
-        .plugin(
+        .component(
             Declared {
                 name: "solo",
                 inject: Inject::required(&["x"]),
@@ -183,8 +183,8 @@ fn healthy_and_merely_missing_dependencies_are_not_cycles() {
     // A real provider keeps its consumer active; A's own declaration
     // (provides "a") is never demanded by anyone.
     let provider = ctx
-        .plugin(
-            |ctx: &Context, _: &Value| -> PluginResult {
+        .component(
+            |ctx: &Context, _: &Value| -> ComponentResult {
                 ctx.provide("b", Arc::new(json!({})))?;
                 Ok(())
             },
@@ -192,7 +192,7 @@ fn healthy_and_merely_missing_dependencies_are_not_cycles() {
         )
         .expect("install provider");
     let consumer = ctx
-        .plugin(
+        .component(
             Declared {
                 name: "A",
                 inject: Inject::required(&["b"]),
@@ -206,7 +206,7 @@ fn healthy_and_merely_missing_dependencies_are_not_cycles() {
 
     // Pending on a dependency nobody claims: missing, not cyclic.
     let waiting = ctx
-        .plugin(
+        .component(
             Declared {
                 name: "wait",
                 inject: Inject::required(&["zz"]),
@@ -219,9 +219,9 @@ fn healthy_and_merely_missing_dependencies_are_not_cycles() {
     assert!(ctx.dependency_cycles().is_empty());
 
     // And a healthy cycle participant is fine: provider provides, A's
-    // provides would satisfy a third plugin.
+    // provides would satisfy a third component.
     let third = ctx
-        .plugin(
+        .component(
             Declared {
                 name: "third",
                 inject: Inject::required(&["a"]),

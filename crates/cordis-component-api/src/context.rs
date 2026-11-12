@@ -1,4 +1,4 @@
-//! The plugin-side context: a thin, `Copy` wrapper over a host handle
+//! The component-side context: a thin, `Copy` wrapper over a host handle
 //! that forwards every operation through the host vtable.
 
 use std::os::raw::c_void;
@@ -8,9 +8,9 @@ use serde_json::{Value, json};
 use crate::abi::{Callback, HostVTable, RawBuffer, log_level};
 use crate::buffer;
 use crate::callback::Disposable;
-use crate::plugin::{Inject, Plugin};
+use crate::component::{Component, Inject};
 
-/// A scoped handle onto the host runtime, as seen from inside a plugin.
+/// A scoped handle onto the host runtime, as seen from inside a component.
 #[derive(Clone, Copy)]
 pub struct Context {
     pub(crate) env: *const HostVTable,
@@ -144,21 +144,22 @@ impl Context {
         }
     }
 
-    /// Install a sub-plugin from inside this plugin; returns the child
+    /// Install a sub-component from inside this component; returns the child
     /// fiber handle (usable with [`Context::fiber_dispose`]).
-    pub fn plugin<P: Plugin>(&self, plugin: P, config: &Value) -> Result<u64, String> {
-        let manifest = build_manifest(plugin.name(), &plugin.inject());
-        let apply = Callback::apply(move |ctx, config| plugin.apply(ctx, config).map_err(|e| e.0));
+    pub fn component<P: Component>(&self, component: P, config: &Value) -> Result<u64, String> {
+        let manifest = build_manifest(component.name(), &component.inject());
+        let apply =
+            Callback::apply(move |ctx, config| component.apply(ctx, config).map_err(|e| e.0));
         let config_buf = buffer::buffer_from_vec(serde_json::to_vec(config).unwrap_or_default());
-        let fiber = unsafe { ((*self.env).plugin)(self.handle, manifest, apply, config_buf) };
+        let fiber = unsafe { ((*self.env).component)(self.handle, manifest, apply, config_buf) };
         if fiber == 0 {
-            Err("cordis: child plugin install failed".into())
+            Err("cordis: child component install failed".into())
         } else {
             Ok(fiber)
         }
     }
 
-    /// Dispose a fiber handle previously returned by [`Context::plugin`].
+    /// Dispose a fiber handle previously returned by [`Context::component`].
     pub fn fiber_dispose(&self, handle: u64) -> Result<bool, String> {
         let code = unsafe { ((*self.env).fiber_dispose)(handle) };
         match code {
@@ -170,7 +171,7 @@ impl Context {
 
     /// Write a log line into the host's logger.
     pub fn log(&self, level: LogLevel, message: &str) {
-        let target = Self::name_buf("plugin");
+        let target = Self::name_buf("component");
         let message_buf = Self::name_buf(message);
         unsafe { ((*self.env).log)(level as i32, target, message_buf) };
     }
@@ -187,7 +188,7 @@ impl Context {
         D: Fn(&Context, WorkOutcome) + Send + Sync + 'static,
     {
         // SAFETY: env is the process-static host vtable handed to every
-        // plugin callback.
+        // component callback.
         let env: &'static HostVTable = unsafe { &*self.env };
         let label_buf = Self::name_buf(label);
         let work_cb = Callback::work_fn(move |token_raw, env| {
@@ -336,7 +337,7 @@ impl EffectHandle {
     }
 }
 
-/// Serialize a plugin manifest for the boundary.
+/// Serialize a component manifest for the boundary.
 pub(crate) fn build_manifest(name: Option<&str>, inject: &Inject) -> RawBuffer {
     let required: Vec<&str> = inject.required_names().collect();
     let optional: Vec<&str> = inject.optional_names().collect();

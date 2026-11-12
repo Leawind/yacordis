@@ -1,17 +1,17 @@
-//! A demo cordis plugin: declared dependency, provided service, event
+//! A demo cordis component: declared dependency, provided service, event
 //! listener, and a disposer that appends to a log file — everything the
 //! integration test drives through the C ABI.
 
 use std::io::Write;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use cordis_plugin_api::prelude::*;
+use cordis_component_api::prelude::*;
 
 static DISPOSES: AtomicUsize = AtomicUsize::new(0);
 
-struct DemoPlugin;
+struct DemoComponent;
 
-impl Plugin for DemoPlugin {
+impl Component for DemoComponent {
     fn name(&self) -> Option<&str> {
         Some("demo-greeter")
     }
@@ -20,13 +20,13 @@ impl Plugin for DemoPlugin {
         Inject::required(&["database"])
     }
 
-    fn apply(&self, ctx: &Context, config: &Value) -> PluginResult {
+    fn apply(&self, ctx: &Context, config: &Value) -> ComponentResult {
         let greeting = config["greeting"].as_str().unwrap_or("hello").to_owned();
         let log_path = config["log"].as_str().unwrap_or("").to_owned();
 
-        // A JSON service, visible to the host and to other plugins.
+        // A JSON service, visible to the host and to other components.
         ctx.provide("greeter", json!({ "greeting": greeting }))
-            .map_err(PluginError::new)?;
+            .map_err(ComponentError::new)?;
 
         // A listener that reads its config and a host-provided service.
         ctx.on("greet", move |ctx, args| {
@@ -35,10 +35,10 @@ impl Plugin for DemoPlugin {
             let uri = db["uri"].as_str().unwrap_or("?");
             Some(json!({ "text": format!("{greeting}, {who} (db: {uri})") }))
         })
-        .map_err(PluginError::new)?;
+        .map_err(ComponentError::new)?;
 
         // An effect whose disposer writes to a file: hard proof that
-        // plugin-side cleanup runs when the host reverts the fiber.
+        // component-side cleanup runs when the host reverts the fiber.
         let log_for_effect = log_path.clone();
         ctx.effect("demo/log", move |_| {
             append(&log_for_effect, "setup\n");
@@ -47,7 +47,7 @@ impl Plugin for DemoPlugin {
                 append(&log_for_effect, "disposed\n");
             })])
         })
-        .map_err(PluginError::new)?;
+        .map_err(ComponentError::new)?;
 
         // Optional blocking-work demo: polls the cancellation token, and
         // the completion callback appends to the log from the worker
@@ -78,7 +78,7 @@ impl Plugin for DemoPlugin {
                     append(&log_for_work, &format!("{tag}\n"));
                 },
             )
-            .map_err(PluginError::new)?;
+            .map_err(ComponentError::new)?;
         }
 
         Ok(())
@@ -93,8 +93,8 @@ fn append(path: &str, text: &str) {
         .create(true)
         .append(true)
         .open(path)
-        .expect("demo plugin: open log file");
-    file.write_all(text.as_bytes()).expect("demo plugin: write log");
+        .expect("demo component: open log file");
+    file.write_all(text.as_bytes()).expect("demo component: write log");
 }
 
-register_plugin!(DemoPlugin);
+register_component!(DemoComponent);

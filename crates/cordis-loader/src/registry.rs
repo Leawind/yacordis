@@ -1,11 +1,11 @@
-//! Plugin repository index: version resolution, checksum verification,
+//! Component repository index: version resolution, checksum verification,
 //! and installation layered on [`Loader::fetch`](crate::Loader::fetch).
 //!
 //! A repository is a static index (`index.json`) plus its artifacts:
 //!
 //! ```json
 //! {
-//!   "plugins": {
+//!   "components": {
 //!     "greeter": [
 //!       { "version": "1.2.0", "artifact": "greeter-1.2.0.cdylib",
 //!         "sha256": "…", "abi": 2 }
@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use crate::loader::{LoadError, Loader, PluginLibrary};
+use crate::loader::{ComponentLibrary, LoadError, Loader};
 
 /// Index/repository layer errors.
 #[derive(Debug)]
@@ -67,7 +67,7 @@ impl std::fmt::Display for RegistryError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Format(message) => write!(f, "malformed index: {message}"),
-            Self::NotFound(message) => write!(f, "no matching plugin: {message}"),
+            Self::NotFound(message) => write!(f, "no matching component: {message}"),
             Self::Version(message) => write!(f, "bad version: {message}"),
             Self::Checksum { expected, actual } => write!(
                 f,
@@ -108,7 +108,10 @@ impl Version {
         }
         let numbers: Result<Vec<u64>, _> = parts
             .iter()
-            .map(|p| p.parse::<u64>().map_err(|_| RegistryError::Version(text.to_owned())))
+            .map(|p| {
+                p.parse::<u64>()
+                    .map_err(|_| RegistryError::Version(text.to_owned()))
+            })
             .collect();
         let numbers = numbers?;
         Ok(Self {
@@ -163,9 +166,7 @@ impl Atom {
 
     fn matches(&self, candidate: Version) -> bool {
         match *self {
-            Self::Caret(base) => {
-                candidate.major == base.major && candidate >= floor(base)
-            }
+            Self::Caret(base) => candidate.major == base.major && candidate >= floor(base),
             Self::Tilde(base) => {
                 candidate.major == base.major
                     && candidate.minor == base.minor
@@ -233,10 +234,10 @@ impl Constraint {
 // Index model
 // ---------------------------------------------------------------------
 
-/// One plugin version in the index.
+/// One component version in the index.
 #[derive(Clone, Debug)]
 pub struct Entry {
-    /// The plugin version.
+    /// The component version.
     pub version: Version,
     /// Artifact file name or absolute URL; a path that exists locally is
     /// loaded directly.
@@ -250,31 +251,36 @@ pub struct Entry {
 /// Parsed `index.json`.
 #[derive(Clone, Debug, Default)]
 pub struct RegistryIndex {
-    plugins: HashMap<String, Vec<Entry>>,
+    components: HashMap<String, Vec<Entry>>,
 }
 
 impl RegistryIndex {
     /// Parse an index document.
     pub fn from_json(document: &Value) -> Result<Self, RegistryError> {
-        let plugins = document
-            .get("plugins")
+        let components = document
+            .get("components")
             .and_then(Value::as_object)
-            .ok_or_else(|| RegistryError::Format("missing `plugins` object".into()))?;
+            .ok_or_else(|| RegistryError::Format("missing `components` object".into()))?;
         let mut index = HashMap::new();
-        for (name, versions) in plugins {
+        for (name, versions) in components {
             let list = versions
                 .as_array()
                 .ok_or_else(|| RegistryError::Format(format!("`{name}` is not an array")))?;
             let mut entries = Vec::new();
             for entry in list {
-                let version_text = entry
-                    .get("version")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| RegistryError::Format(format!("`{name}` entry missing version")))?;
+                let version_text =
+                    entry
+                        .get("version")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| {
+                            RegistryError::Format(format!("`{name}` entry missing version"))
+                        })?;
                 let artifact = entry
                     .get("artifact")
                     .and_then(Value::as_str)
-                    .ok_or_else(|| RegistryError::Format(format!("`{name}` entry missing artifact")))?
+                    .ok_or_else(|| {
+                        RegistryError::Format(format!("`{name}` entry missing artifact"))
+                    })?
                     .to_owned();
                 let sha256 = entry
                     .get("sha256")
@@ -292,13 +298,13 @@ impl RegistryIndex {
             entries.sort_by_key(|entry| entry.version);
             index.insert(name.clone(), entries);
         }
-        Ok(Self { plugins: index })
+        Ok(Self { components: index })
     }
 
     /// Best version matching `constraint` (highest wins).
     pub fn resolve(&self, name: &str, constraint: &Constraint) -> Result<&Entry, RegistryError> {
         let entries = self
-            .plugins
+            .components
             .get(name)
             .ok_or_else(|| RegistryError::NotFound(format!("`{name}` not in index")))?;
         entries
@@ -336,7 +342,7 @@ impl Verifier for Sha256Verifier {
                 actual,
             });
         }
-        let host_abi = cordis_plugin_api::ABI_VERSION;
+        let host_abi = cordis_component_api::ABI_VERSION;
         if entry.abi != host_abi {
             return Err(RegistryError::Abi {
                 expected: entry.abi,
@@ -360,7 +366,7 @@ pub struct Repository {
 }
 
 impl Repository {
-    /// A repository rooted at `base_url` (e.g. `https://plugins.example/v1`).
+    /// A repository rooted at `base_url` (e.g. `https://components.example/v1`).
     pub fn new(base_url: impl Into<String>, cache_dir: impl Into<PathBuf>) -> Self {
         Self {
             base_url: base_url.into().trim_end_matches('/').to_owned(),
@@ -390,7 +396,7 @@ impl Repository {
         name: &str,
         constraint: &Constraint,
         verifier: &V,
-    ) -> Result<PluginLibrary, RegistryError> {
+    ) -> Result<ComponentLibrary, RegistryError> {
         let entry = index.resolve(name, constraint)?;
         let bytes = self.artifact_bytes(entry)?;
         verifier.verify(entry, &bytes)?;
@@ -413,10 +419,16 @@ impl Repository {
         }
         #[cfg(feature = "download")]
         {
-            let url = if entry.artifact.starts_with("http://") || entry.artifact.starts_with("https://") {
+            let url = if entry.artifact.starts_with("http://")
+                || entry.artifact.starts_with("https://")
+            {
                 entry.artifact.clone()
             } else {
-                format!("{}/{}", self.base_url, entry.artifact.trim_start_matches('/'))
+                format!(
+                    "{}/{}",
+                    self.base_url,
+                    entry.artifact.trim_start_matches('/')
+                )
             };
             let path = Loader::fetch(&url, &self.cache_dir)
                 .map_err(|e| RegistryError::Fetch(e.to_string()))?;
@@ -505,8 +517,10 @@ fn compress(state: &mut [u32; 8], block: &[u8; 64]) {
         ]);
     }
     for index in 16..64 {
-        let s0 = w[index - 15].rotate_right(7) ^ w[index - 15].rotate_right(18) ^ (w[index - 15] >> 3);
-        let s1 = w[index - 2].rotate_right(17) ^ w[index - 2].rotate_right(19) ^ (w[index - 2] >> 10);
+        let s0 =
+            w[index - 15].rotate_right(7) ^ w[index - 15].rotate_right(18) ^ (w[index - 15] >> 3);
+        let s1 =
+            w[index - 2].rotate_right(17) ^ w[index - 2].rotate_right(19) ^ (w[index - 2] >> 10);
         w[index] = w[index - 16]
             .wrapping_add(s0)
             .wrapping_add(w[index - 7])

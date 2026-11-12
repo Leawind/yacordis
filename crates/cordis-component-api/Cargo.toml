@@ -1,6 +1,6 @@
 [package]
-name = "cordis-plugin-api"
-description = "Stable C-ABI boundary for cordis plugins compiled as cdylib binaries"
+name = "cordis-component-api"
+description = "Stable C-ABI boundary for cordis components compiled as cdylib binaries"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

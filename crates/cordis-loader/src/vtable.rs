@@ -1,17 +1,17 @@
-//! The single static host vtable handed to every plugin callback, and
+//! The single static host vtable handed to every component callback, and
 //! the `extern "C"` functions behind it.
 //!
-//! Buffer ownership recap (see `cordis-plugin-api`): every buffer is
+//! Buffer ownership recap (see `cordis-component-api`): every buffer is
 //! freed exactly once with the shared allocator, by whoever is done
-//! with it. Input buffers handed to us by plugins are freed here after
-//! parsing; output buffers we fill are freed by the plugin after
+//! with it. Input buffers handed to us by components are freed here after
+//! parsing; output buffers we fill are freed by the component after
 //! reading.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use cordis_plugin_api::{ABI_VERSION, Callback, HostVTable, RawBuffer, log_level};
+use cordis_component_api::{ABI_VERSION, Callback, HostVTable, RawBuffer, log_level};
 use serde_json::{Value, json};
 
 use crate::adapter::{Invocation, SendCallback};
@@ -22,9 +22,9 @@ pub(crate) fn handles() -> &'static HandleTable {
     HandleTable::global()
 }
 
-/// Log lines from plugins go straight to stderr; a richer logger can be
+/// Log lines from components go straight to stderr; a richer logger can be
 /// layered on the host side later.
-fn plugin_log(level: i32, message: &str) {
+fn component_log(level: i32, message: &str) {
     let level = match level {
         log_level::DEBUG => LogLevel::Debug,
         log_level::INFO => LogLevel::Info,
@@ -37,41 +37,41 @@ fn plugin_log(level: i32, message: &str) {
         LogLevel::Warn => "WARN",
         LogLevel::Error => "ERROR",
     };
-    eprintln!("[{name}] [cordis/plugin] {message}");
+    eprintln!("[{name}] [cordis/component] {message}");
 }
 
 fn take_string(buffer: RawBuffer) -> String {
-    let text = cordis_plugin_api::buffer_to_string(buffer);
-    cordis_plugin_api::free_buffer(buffer);
+    let text = cordis_component_api::buffer_to_string(buffer);
+    cordis_component_api::free_buffer(buffer);
     text
 }
 
 fn take_json(buffer: RawBuffer) -> Value {
-    let value =
-        serde_json::from_slice(&cordis_plugin_api::buffer_into_vec(buffer)).unwrap_or(Value::Null);
-    cordis_plugin_api::free_buffer(buffer);
+    let value = serde_json::from_slice(&cordis_component_api::buffer_into_vec(buffer))
+        .unwrap_or(Value::Null);
+    cordis_component_api::free_buffer(buffer);
     value
 }
 
 fn make_json(value: &Value) -> RawBuffer {
-    cordis_plugin_api::buffer_from_vec(serde_json::to_vec(value).unwrap_or_default())
+    cordis_component_api::buffer_from_vec(serde_json::to_vec(value).unwrap_or_default())
 }
 
 unsafe extern "C" fn v_free_buffer(buffer: RawBuffer) {
-    cordis_plugin_api::free_buffer(buffer);
+    cordis_component_api::free_buffer(buffer);
 }
 
 unsafe extern "C" fn v_log(level: i32, target: RawBuffer, message: RawBuffer) {
     let _target = take_string(target);
     let message = take_string(message);
-    plugin_log(level, &message);
+    component_log(level, &message);
 }
 
 unsafe extern "C" fn v_effect(ctx_handle: u64, label: RawBuffer, setup: Callback) -> u64 {
     let label = take_string(label);
     let setup = SendCallback::new(setup);
     let Some(ctx) = handles().get_context(ctx_handle) else {
-        // Dropping `setup` releases the plugin-side state via Drop.
+        // Dropping `setup` releases the component-side state via Drop.
         return 0;
     };
     let result = ctx.effect(&label, move |_| {
@@ -122,7 +122,7 @@ fn invoke_listener(listener: &SendCallback, ctx_handle: u64, args: &Value) -> Op
         Invocation::Ok(value) => value,
         Invocation::Disposers(_) => None,
         Invocation::Failed(message) => {
-            plugin_log(log_level::ERROR, &format!("listener failed: {message}"));
+            component_log(log_level::ERROR, &format!("listener failed: {message}"));
             None
         }
     }
@@ -231,14 +231,14 @@ unsafe extern "C" fn v_bail(
     }
 }
 
-unsafe extern "C" fn v_plugin(
+unsafe extern "C" fn v_component(
     ctx_handle: u64,
     manifest: RawBuffer,
     apply: Callback,
     config: RawBuffer,
 ) -> u64 {
-    let manifest_text = cordis_plugin_api::buffer_to_string(manifest);
-    cordis_plugin_api::free_buffer(manifest);
+    let manifest_text = cordis_component_api::buffer_to_string(manifest);
+    cordis_component_api::free_buffer(manifest);
     let config = take_json(config);
     let Ok(doc) = serde_json::from_str::<Value>(&manifest_text) else {
         return 0;
@@ -263,11 +263,11 @@ unsafe extern "C" fn v_plugin(
             inject = inject.opt(n);
         }
     }
-    let child = crate::adapter::FfiPlugin::new(name, inject, SendCallback::new(apply));
+    let child = crate::adapter::FfiComponent::new(name, inject, SendCallback::new(apply));
     let Some(ctx) = handles().get_context(ctx_handle) else {
         return 0;
     };
-    match ctx.plugin_dyn(Arc::new(child), config) {
+    match ctx.component_dyn(Arc::new(child), config) {
         Ok(handle) => handles().insert(HostObject::Fiber(handle)),
         Err(_) => 0,
     }
@@ -282,7 +282,7 @@ unsafe extern "C" fn v_fiber_dispose(handle: u64) -> i32 {
             // handles bound to the dead fiber.
             let collected = handles().audit_fiber(fiber.id().unwrap_or(u64::MAX));
             if collected > 0 {
-                plugin_log(
+                component_log(
                     log_level::DEBUG,
                     &format!("dispose audit: collected {collected} stale context handles"),
                 );
@@ -301,7 +301,7 @@ unsafe extern "C" fn v_fiber_dispose(handle: u64) -> i32 {
     }
 }
 
-// The token registry hands each FFI work unit a pollable id: the plugin
+// The token registry hands each FFI work unit a pollable id: the component
 // side sees the token handle as its work callback's `ctx` argument.
 fn work_tokens() -> &'static Mutex<(AtomicU64, HashMap<u64, CancellationToken>)> {
     static TOKENS: OnceLock<Mutex<(AtomicU64, HashMap<u64, CancellationToken>)>> = OnceLock::new();
@@ -340,7 +340,7 @@ unsafe extern "C" fn v_run_blocking(
             take_token(token_id);
             match invocation {
                 Invocation::Ok(value) => Ok(value.unwrap_or(Value::Null)),
-                Invocation::Failed(message) => Err(cordis::PluginError::new(message)),
+                Invocation::Failed(message) => Err(cordis::ComponentError::new(message)),
                 Invocation::Disposers(_) => Ok(Value::Null),
             }
         },
@@ -382,7 +382,7 @@ unsafe extern "C" fn v_work_cancel(handle: u64) -> i32 {
     }
 }
 
-/// The vtable pointer passed to every plugin callback.
+/// The vtable pointer passed to every component callback.
 pub(crate) static HOST_VTABLE: HostVTable = HostVTable {
     abi_version: ABI_VERSION,
     free_buffer: v_free_buffer,
@@ -397,7 +397,7 @@ pub(crate) static HOST_VTABLE: HostVTable = HostVTable {
     has: v_has,
     emit: v_emit,
     bail: v_bail,
-    plugin: v_plugin,
+    component: v_component,
     fiber_dispose: v_fiber_dispose,
     run_blocking: v_run_blocking,
     work_cancelled: v_work_cancelled,

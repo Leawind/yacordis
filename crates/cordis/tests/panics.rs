@@ -1,4 +1,4 @@
-//! Panic containment at every user-code boundary. A plugin body panic
+//! Panic containment at every user-code boundary. A component body panic
 //! was already covered in `lifecycle.rs`; these tests lock the remaining
 //! catch_unwind sites: event listeners, effect disposers, waterfall
 //! middlewares and effect setups.
@@ -68,10 +68,10 @@ fn panicking_disposer_does_not_block_remaining_disposers() {
     let log: Log = Arc::default();
 
     let handle = ctx
-        .plugin(
+        .component(
             {
                 let log = log.clone();
-                move |ctx: &Context, _: &Value| -> PluginResult {
+                move |ctx: &Context, _: &Value| -> ComponentResult {
                     // Registered first → disposed last: proves the chain
                     // continued past the panicking disposer.
                     ctx.effect("eff/after", {
@@ -103,8 +103,8 @@ fn panicking_disposer_does_not_block_remaining_disposers() {
 fn panicking_middleware_aborts_update_with_error() {
     let ctx = Context::new();
     let handle = ctx
-        .plugin(
-            |ctx: &Context, _: &Value| -> PluginResult {
+        .component(
+            |ctx: &Context, _: &Value| -> ComponentResult {
                 ctx.middleware("internal/update", |_ctx, _value, _next| {
                     panic!("middleware boom");
                 })?;
@@ -138,8 +138,8 @@ fn panicking_effect_setup_fails_the_fiber_and_reverts_collected_effects() {
     let handle = {
         let recover = recover.clone();
         let log = log.clone();
-        ctx.plugin(
-            move |ctx: &Context, _: &Value| -> PluginResult {
+        ctx.component(
+            move |ctx: &Context, _: &Value| -> ComponentResult {
                 ctx.effect("eff/before", {
                     let log = log.clone();
                     move |_| {
@@ -168,7 +168,7 @@ fn panicking_effect_setup_fails_the_fiber_and_reverts_collected_effects() {
 
     assert_eq!(handle.state(), FiberState::Failed);
     let error = handle.error().expect("failure recorded");
-    assert!(error.contains("plugin panicked: setup boom"), "{error}");
+    assert!(error.contains("component panicked: setup boom"), "{error}");
     // Effects recorded before the panicking setup were reverted.
     assert_eq!(logged(&log), ["before:dispose"]);
 

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
-description = "Attribute macros for declaring cordis plugins"
+description = "Attribute macros for declaring cordis components"
 
 [lib]
 proc-macro = true

@@ -1,6 +1,6 @@
 [package]
 name = "cordis-loader"
-description = "Runtime installer for cordis plugins distributed as prebuilt cdylib binaries"
+description = "Runtime installer for cordis components distributed as prebuilt cdylib binaries"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,11 +8,11 @@ license.workspace = true
 
 [dependencies]
 cordis = { workspace = true }
-cordis-plugin-api = { workspace = true }
+cordis-component-api = { workspace = true }
 libloading = "0.8"
 serde_json = { workspace = true }
 
-# Optional: install plugins straight from a URL.
+# Optional: install components straight from a URL.
 ureq = { version = "2", optional = true }
 
 [features]
