@@ -72,6 +72,10 @@ impl HandleTable {
     /// handle bound to `fiber_id` and return how many were collected.
     /// `get_context` garbage-collects on sight; this closes the hole of
     /// handles never queried again after their fiber goes away.
+    ///
+    /// This relies on fiber ids being process-global (`Core::next_fiber_id`):
+    /// with per-runtime counters, a dispose in one runtime would collect
+    /// another runtime's live context handles.
     pub(crate) fn audit_fiber(&self, fiber_id: u64) -> usize {
         let mut map = self.map.lock().unwrap();
         let stale: Vec<u64> = map

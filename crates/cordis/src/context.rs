@@ -81,7 +81,6 @@ pub(crate) struct ServiceKey {
 }
 
 pub(crate) struct Core {
-    fiber_sn: AtomicU64,
     hook_sn: AtomicU64,
     pub(crate) root: Arc<Fiber>,
     pub(crate) registry: Mutex<Registry>,
@@ -103,7 +102,6 @@ impl Core {
     fn new() -> Arc<Core> {
         let root = Fiber::new_root();
         let core = Arc::new(Core {
-            fiber_sn: AtomicU64::new(1),
             hook_sn: AtomicU64::new(1),
             root: root.clone(),
             registry: Mutex::new(Registry::default()),
@@ -123,8 +121,15 @@ impl Core {
         core
     }
 
+    /// Mint a fiber id. The counter is **process-global**, not per
+    /// runtime: the loader's plugin-facing handle table is process-global
+    /// and garbage-collects context handles by fiber id on dispose, so two
+    /// runtimes in one process must never mint the same id (a collision
+    /// lets one runtime's dispose audit remove the other's live context
+    /// handles, which surfaces as `run_blocking failed` in a plugin).
     pub(crate) fn next_fiber_id(&self) -> u64 {
-        self.fiber_sn.fetch_add(1, Ordering::Relaxed)
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        NEXT.fetch_add(1, Ordering::Relaxed)
     }
 
     pub(crate) fn next_hook_id(&self) -> u64 {
