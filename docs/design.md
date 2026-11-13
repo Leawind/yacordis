@@ -7,7 +7,6 @@
 
 - 论文：*A Programming Paradigm for Spatiotemporal Composability*（arXiv:2608.25512）
 - 参考实现：<https://github.com/cordiverse/cordis>（main 分支 = v4）
-- 本仓库里程碑 1 范围：同步核心（Context / Fiber / Effect / 事件 / 服务）
 
 ## 1. 概念映射（论文 ↔ v4 ↔ yacordis）
 
@@ -35,7 +34,7 @@
 - 因此 dispose 外层 effect 会连带回滚内层 effect。
 - 组件体本身就是一次 batch 收集（v4 的 `_execute(this._runner)`）。
 - **逆序全序**：卸载时对 batch 列表逆序、batch 内逆序，整体等价于
-  严格按注册先后逆序回滚。注意 setup 的「返回值 disposer」注册时机在
+  严格按注册先后逆序回滚。注意 setup 的"返回值 disposer"注册时机在
   setup 结束时（晚于期间嵌套注册者），因此最先被清理——与 v4 的
   `safeCollect(effect)` 时机一致。
 
@@ -59,7 +58,7 @@
 
 - 组件体出错（含 panic，`catch_unwind` 转换）：**立即回滚**该次加载
   已收集的全部 effect，fiber 进入 `Failed`，错误保留至 `update()`；
-  「Failed 即无副作用」兑现论文的时间性可组合承诺。
+  "Failed 即无副作用"兑现论文的时间性可组合承诺。
 - `handle.update(config)`：经 `internal/update` waterfall（中间件可
   改写配置）→ 清除错误 → 强制重启（epoch 先置 `None` 再重算，保证
   依赖未变时也重跑组件体）→ 若仍失败则返回错误。
@@ -83,7 +82,7 @@
   （服务出现/撤回；值仅当服务本身是 `serde_json::Value` 时透出）、
   `internal/dispatch`（非 internal 事件的观测钩子）、
   `internal/update`（配置更新 waterfall）。
-- isolate 已落地（§5.3：服务 store 按 `(name, label)` 键控，notify 按
+- isolate（§5.3：服务 store 按 `(name, label)` 键控，notify 按
   组隔离，事件级联不跨组）；v4 的 thisArg 过滤（`Context.filter`）与
   `global` 选项待事件分发的按组过滤能力落地。
 
@@ -97,7 +96,7 @@
 ### 2.6 框架中介并发（async as plumbing）
 
 异步里程碑的落地形态（§4.1 I1 的实现）：**生命周期保持同步串行**（
-结构性免疫的来源，见 §7），并发作为框架管道提供；与 v4 的分歧
+结构性免疫的来源），并发作为框架管道提供；与 v4 的分歧
 记录于 §3。
 
 - **`ctx.run_blocking(label, work, on_done)`**：`work` 在专用框架线程
@@ -111,8 +110,8 @@
 - **排空先于回滚**：每个工作单元双重登记（fiber 的 effect = 作用域
   生命周期；fiber 的 works 列表 = 排空清单）。`unload` 与失败体回滚
   先 cancel + join 全部在途单元，再逆序 disposal——回滚期间不存在
-  并发组件代码（`drain_fiber_works`）。join 对「正在执行本单元完成
-  回调的线程」自跳（thread-local 守卫），回调里 dispose 自身 fiber
+  并发组件代码（`drain_fiber_works`）。join 对"正在执行本单元完成
+  回调的线程"自跳（thread-local 守卫），回调里 dispose 自身 fiber
   不会自死锁。
 - **执行器中断语义**：任务停泊在 in-flight 注册表中，中止请求对
   Pending 任务保持可见（测试锁定于 `tests/work.rs`）。
@@ -139,7 +138,7 @@ yacordis 的首期落地（`ctx.intercept(name, value)`，JSON 服务）：
 - 与上游的偏差：v4 的 Service 类携带 metadata 并自定义
   `mergeIntercept`；本实现 typed 服务为无元数据的裸值，拦截合并由
   JSON 通道承载。`resolveConfig`
-  的职责由 schema 默认值（§6.4）承担；`check` 谓词已落地为
+  的职责由 schema 默认值承担；`check` 谓词为
   `ctx.provide_schema`（§2.8）。
 
 ### 2.8 服务值校验（check 谓词的 Rust 形态）
@@ -147,12 +146,12 @@ yacordis 的首期落地（`ctx.intercept(name, value)`，JSON 服务）：
 `ctx.provide_schema(name, schema)`：为某 JSON 服务（按
 `(name, isolate label)` 键控）登记一个值 schema——此后该服务的每次
 provide/set 都先过校验，违规即整次调用失败并保留原值。对应上游
-`provide(name, service, check)` 的 check：以「声明式 schema 门控」
+`provide(name, service, check)` 的 check：以"声明式 schema 门控"
 承载，复用配置校验的 DSL；typed 服务
 旁路（与 intercept 同一取舍）。登记是 effect——随 fiber 卸载解除，
 所有权以 schema 节点指针判等（防重注册竞争下的误删）。
 
-## 3. 与 TS 版的有意分歧（截至 M1）
+## 3. 与 TS 版的有意分歧
 
 1. **纯同步**：生命周期签名保持同步（模型选择）；并发需求由框架管道
    承担（§2.6），`serial` 语义并入 `bail`；v4 的 fiber
@@ -160,23 +159,22 @@ provide/set 都先过校验，违规即整次调用失败并保留原值。对�
 2. **显式服务访问**：一律 `ctx.get("name")`（对应 v4 的
    traceable/shadow、mixin/accessor、callable service、`ctx.xxx`
    动态属性等访问形态）。
-3. **服务可见性**（M1 时点：全局可见，按名字）：isolate 已于 M3
-   落地（§5.3）；服务 intercept 已落地（§2.7，
-   fiber 链分层覆盖）；`check` 谓词已落地（§2.8，声明式 schema 门控）；
-   配置拦截合并（`Config.merge`）、typed 服务自定义 `mergeIntercept`
-   待后续里程碑。
+3. **服务可见性**：isolate 按 `(name, label)` 键控（§5.3）；服务
+   intercept（§2.7，fiber 链分层覆盖）；`check` 谓词（§2.8，
+   声明式 schema 门控）；配置拦截合并（`Config.merge`）、
+   typed 服务自定义 `mergeIntercept` 待后续里程碑。
 4. **组件身份** = `Arc` 数据指针（v4 按解析出的函数身份）。同一组件
    值的多次安装共享 runtime 条目；重新包装 `Arc` 视为新组件。
 5. **Failed 即回滚**（见 2.3）。
 6. 错误链由 logger 承载（对应 v4 的 `composeError` 长栈拼接）。
 7. `Service` 基类模式 → 惯用法：组件体内 `ctx.provide(...)`；`#[component]`
-   属性宏已落地（`yacordis-macros`，§6 第 7 条），Service 模式宏待需求。
+   属性宏（`yacordis-macros`）；Service 模式宏待需求。
 8. root fiber 即装即活。
 
-## 4. 里程碑 2（已实现）：二进制组件分发（cdylib + C ABI）
+## 4. 二进制组件分发（cdylib + C ABI）
 
 硬性需求：组件以预编译 cdylib 分发，用户从互联网/文件安装，宿主
-全程保持运行；「现场编写并构建」仅为开发者路径，产物仍走同
+全程保持运行；"现场编写并构建"仅为开发者路径，产物仍走同
 一加载管线。
 
 宿主与组件之间以 C ABI 为边界（`yacordis-component-api`，`ABI_VERSION = 4`；
@@ -226,7 +224,7 @@ Value 优先的动态载体、无锁重入（§2.2，FFI 回调内再 install/pr
 
 ### 4.1 卸载限制契约（组件规范不变量）
 
-「干净卸载」分三层：①**语义干净**（经框架注册的一切可证明回收）——
+"干净卸载"分三层：①**语义干净**（经框架注册的一切可证明回收）——
 由 effect 收集结构保证，无需组件作者配合；②**代码干净**（代码页
 全程有效）——由 keep-mapped 策略承载（见上）；③
 **进程干净**（长期运行无累积残留）——依赖组件作者遵守以下三条不变量：
@@ -236,7 +234,7 @@ Value 优先的动态载体、无锁重入（§2.2，FFI 回调内再 install/pr
   （落幕 → 排空 → 回滚三阶段），回滚期间不存在并发组件代码。线程与
   async 可以存在，但只能作为宿主管道（框架并发 API，或登记为 effect、
   排空阶段关闭的内部 runtime），不得建立框架看不见的第二调度域。
-  已落地为 §2.6 的 `run_blocking`/`spawn_future` + `drain_fiber_works`。
+  实现为 §2.6 的 `run_blocking`/`spawn_future` + `drain_fiber_works`。
 - **I2（资源所有权）**：组件获取的一切资源，要么经 `ctx` 注册（框架
   持有，记入 handle 表），要么永不逃出组件体作用域。推论：dispose 时
   handle 表为空 ⇒ 语义干净。宿主半边机械可查（dispose 审计：表空
@@ -252,7 +250,7 @@ Value 优先的动态载体、无锁重入（§2.2，FFI 回调内再 install/pr
 信任发布者）；I3 由 lint；keep-mapped 兜底保证违规至多退化为内存泄漏。
 子进程是 CPU 并行与故障隔离的合规逃生舱——进程死亡是唯一完美的卸载。
 
-## 5. 设计评审记录（2026-09-06，里程碑 3 后）
+## 5. 设计评审记录
 
 对已实现部分的一次全面自查：每个决策复核理由，缺陷当场修复，债务显式记录。
 
@@ -312,13 +310,13 @@ Value 优先的动态载体、无锁重入（§2.2，FFI 回调内再 install/pr
    脱节，多线程交错下会把已停用的 fiber 拉回 Active。修复：op 携带
    epoch 快照，执行时不匹配即丢弃（`run_op` stale-guard）。
 2. **同步边界**：`install`/`dispose`/`restart` 的级联在无竞争时同步
-   完成；有并发交错时级联可能「稍后」落地。为提供与 v4 `inertia`
+   完成；有并发交错时级联可能"稍后"落地。为提供与 v4 `inertia`
    对应的同步语义，新增 `Core::quiesce()`（等待全部 op 执行完毕）与
    `FiberHandle::wait_for(state, timeout)`，并在 install/dispose/restart
    内部调用——【重入场景（组件 body 内再 install/dispose）自动跳过】，
    否则 quiesce 会等待自身正在执行的外层 op，形成自死锁。
 3. **重入 quiesce 自死锁**（上面第 2 条的防御本身曾是死锁源）：以
-   thread-local `EXECUTING_OPS` 检测「本线程正处于某个 op 内」来跳过。
+   thread-local `EXECUTING_OPS` 检测"本线程正处于某个 op 内"来跳过。
 
 **仍然接受的债**（更新后余量）：
 
@@ -329,118 +327,3 @@ Value 优先的动态载体、无锁重入（§2.2，FFI 回调内再 install/pr
 3. ~~组件侧监听器无手动移除句柄~~（✅ 已解决：`ctx.on`/`ctx.once`
    返回 `ListenerHandle`，可 `dispose()` 手动移除；§4 边界限制同步更新）。
 4. `Fiber.parent`/`Fiber.isolate` 字段暂只写不读（为 scope 内省预留）。
-
-## 6. 路线图
-
-**状态（2026-11-10）：1–8 全部落地**。余量：FFI 侧 `spawn_future`
-（future 构造跨界是独立设计问题）、typed 服务自定义 `mergeIntercept`
-（与 §2.7/§2.8 同族）、非对称签名（需加密依赖）、Service 模式宏、
-ABI 遥测（buffer 配平计数）。
-
-1. ~~M2：`yacordis-component-api` + `yacordis-loader`~~（✅ 见 §4）。
-2. ~~异步生命周期~~ → 重定义为**框架中介并发**并已落地（§2.6：
-   `run_blocking` / `spawn_future` + 排空先于回滚；FFI 侧经 ABI v2
-   暴露 `run_blocking`，组件 ABI 现为 v3）。
-   `parallel`/`serial` 分发待 async 监听器需求；
-   FFI 侧 `spawn_future` 待设计（future 构造跨界是独立问题）。
-3. ~~`yacordis-timer` / `yacordis-logger`~~（✅ M3：同步线程定时轮 + 分级
-   日志服务；`sleep` 以 effect 挂靠 fiber，卸载即唤醒，详见各自 crate
-   文档）。
-4. ~~配置校验~~（✅ `yacordis::schema`：可组合 DSL——类型/长度/范围/
-   枚举/数组/对象字段校验，`opt_default` 即 resolveConfig 等价的默认值
-   解析；经 `Component::schema` 挂接，install 前拒绝 → `Failed` 零副作用，
-   update 拒绝 → 保留旧配置，通过的配置以解析后形态持久化。FFI 组件
-   暂在 body 内自行校验）。isolate 已落地（§5.3），依赖环诊断已落地
-   （§7）；**服务 intercept 首期已落地**（§2.7：fiber 链分层覆盖、
-   nearest-wins 浅合并、JSON 服务，effect 登记随卸载回滚）；**`check`
-   谓词已落地**（§2.8：`ctx.provide_schema` 服务值门控）；typed 服务
-   自定义 `mergeIntercept` 待需求。
-5. 原位组件替换（对齐上游 `registry.replace()`，#266）：✅ native 侧
-   已落地（`Context::replace_component` + `internal/replace`，见 §7.1）；
-   FFI 侧对应 `ComponentLibrary` 级替换（keep-mapped 下旧库留驻、新库接管
-   fibers）待做。
-6. ~~组件仓库索引~~（✅ `yacordis-loader::registry`：静态 index.json +
-   最小 semver（`^`/`~`/比较/精确；预发布待支持）+ 依赖无关的 sha-256
-   （FIPS 180-4，NIST 向量锁定）内容寻址校验 + ABI 门；本地路径直取、
-   否则走 `fetch` 下载，按内容哈希入缓存。非对称签名待加密依赖，
-   `Verifier` 是插点）。
-7. ~~`yacordis-macros`~~（✅ `#[component]` 属性宏落地：普通函数 + name/
-   inject(…)/provides/schema 声明 → 生成 Component 适配器，声明进入响应
-   式门控与依赖环诊断，`schema = <expr>` 经 `Component::schema` 在
-   install/update 时校验并解析配置；async fn 显式拒绝，指回 §2.6）。
-   Service 模式宏待需求。
-8. ~~§4.1 契约的机械化~~（✅ ast-grep lint profile 五条规则随 crate
-   分发——裸 spawn / tokio 调度 / 可变 static / exit 钩子 / FFI 手工
-   分配；`BuildOptions.lint` 门控构建，`lint_source` 可独立调用，
-   ast-grep 未安装时尽力跳过。dispose 审计收集绑死于已亡 fiber 的
-   context 句柄——I2 宿主半边，测试锁定于 `tests/contract.rs`；
-   buffer 计数配平待 ABI 层遥测）。
-
-## 7. TS 上游对照与跟进（2026-11-12，rc.9 → HEAD @ 261c5fda）
-
-cordis TS（v4）自上次快照（2026-09-06，rc.9）推进至
-261c5fda（2026-11-10，http/cli 包迁入 monorepo），共 85 个提交。
-跟进策略：**盯 cordiverse/cordis 的 issue 列表**——那里的
-问题就是这个范式在真实负载下暴露的裂缝预告片。逐项对照：
-
-| 上游 issue | 主题 | yacordis 状态 |
-|---|---|---|
-| #34 | epoch ABA：async 加载期间 update 改配置，epoch 感知不到 | **双双闭合**：上游以 fiber revision 计数实现 stale-guard（#189）；我们的 op epoch 快照 + stale-guard（§5.3）机制对等，测试锁定于 `tests/stale_ops.rs` |
-| #96 / #91 | 卸载中注册 effect/listener → 泄漏 | 上游仍 open；**已覆盖**：`unloading` 态注册一律 `InactiveContext`、effect 即时回滚，测试锁定于 `tests/unloading.rs` |
-| #110 | provider 先于 consumer 卸载（`Promise.all` 竞态） | **双双闭合**：上游按服务绑定跟踪 dependents（#196）；我们的同步级联（consumer 在 provider 的 provide-disposer 内完成停用）顺序契约一致，测试锁定于 `tests/lifecycle.rs`、`tests/cascade.rs` |
-| #66 | 循环组件依赖无检测 | 上游仍 open，**我们领先**：`Component::provides` 声明 + SCC 检测 + 日志/内省报告（`src/diagnose.rs`）；body-only provide 不可检测，与上游同为开放边界 |
-| #43 | waterfall 结构化取消语义 | 上游仍 open；**部分对齐**：全链 `Result` 化、panic 转 Err（§2.4）；完整的取消语义上游也未定论 |
-| #90 | intercept 重设计 | **上游已收敛**（PR #90 重写 resolveConfig；#206 定 metadata 合并次序），§6.4 设计启动前提满足 |
-| #102 | Standard Schema 诊断化 | 上游仍 open，继续观察 |
-
-### 7.1 rc.9 → HEAD 语义对齐清单
-
-- **#242（采纳对齐）**：dispatch 中实时尊重监听器移除——被移除的监听器
-  在同一轮 dispatch 中不再被调用。快照迭代语义已按此修正（`src/events.rs`），
-  回归测试锁定。
-- **#56（补回归测试）**：`internal/update` hooks 随 fiber 释放——我们经
-  effect 收集天然覆盖，测试补齐。
-- **#296（采纳对齐）**：`DisposableList.unshift()` 让 fiber-local
-  `internal/update` 监听器的 `{ prepend: true }` 生效。我们的
-  waterfall 中间件注册表本只有 append 语义，现补 prepend
-  （`Context::middleware_prepend`）：prepend 项整体先于 append 项、
-  彼此按注册逆序，移除单个 prepend 项不动链条其余部分——语义与上游
-  测试逐点对齐，回归测试锁定于 `tests/update_hooks.rs`。同 PR 的另
-  两项：`clear()` 返回顺序属上游内部重构（两侧 dispose 顺序契约一致）；
-  「disposed fiber 不被后续通知复活」已由 `refresh`/`reload` 的
-  `disposed` 守卫覆盖（§5.3 stale-guard 体系）。#297（side-effect
-  标记）为 TS 打包事务，Rust 侧无对应物。
-- **#277（早已对齐）**：notify 按 `(name, isolate label)` 定向——
-  `reflect.rs::notify` 一直如此，无需改动。
-- **#111 HMR 三阶段排空（范式背书）**：上游 HMR 采用「落幕 → 排空 →
-  调和」的 per-fiber drain——与 §4.1 I1 的卸载协议同构。模块图与缓存
-  失效（#269/#298）为 require 机制专属，cdylib 结构性不适用。
-- **#266 `registry.replace()`（native 侧已落地）**：原位组件替换——fiber
-  保身份（id/parent/config）、换 component+inject+provides、重跑体；依赖方
-  经常规 provide/withdraw 级联感知服务变更，Failed fiber 可被替换恢复，
-  新增 `internal/replace` 事件（`Context::replace_component`）。FFI 侧对应
-  `ComponentLibrary` 级替换（keep-mapped 下旧库留驻、新库接管 fibers）
-  仍在路线图（§6.5）。
-- **#109/#133/#189 等并发修复**：同步核中同类窗口结构性不存在或已有
-  对应机制（§5.3），逐一核对过，无需改动。
-- **#307（采纳改名，2026-11-12 落地）**：上游将范式主术语 plugin 改为
-  component——`ctx.plugin()` → `ctx.use()`（保留弃用别名）、loader 导出
-  契约 `exports.plugin` → `exports.component`（无别名），零语义变化。
-  本项目全库跟随（分支 feature/component）。Rust 侧命名决策：方法取
-  名词 `ctx.component`（`use` 是 Rust 关键字，弃 TS 动词取名词）；crate
-  随名 `yacordis-component-api`；导出符号 `cordis_component_*` 且
-  `ABI_VERSION` 升 3；仓库索引键 `"plugins"` → `"components"`；项目未
-  发布，不留弃用别名。事件名 `internal/plugin` 上游改名后仍保留，两侧
-  一致不动。另三项同日提交均 N/A：#303（package-manager 的 pnpm/yarn
-  isolated layouts）、#308（http/cli 迁入 monorepo）、#311（发布 CI）——
-  Rust 侧无对应物。
-
-同步模型的两个定位差异点（模型选择带来的结构性红利）：其一，
-epoch ABA、provider/consumer 卸载顺序等竞态窗口在同步核中
-结构性不存在（§7 #34/#110）；其二，
-二进制组件分发（cdylib + C ABI）是约 1,400 行的一等能力（§4）。
-
-code size 对比（2026-09-06 时点，仅产品代码）：核心 TS 1,592 行 vs
-Rust 2,059 行（+29%，多出的是 TS 靠事件循环与 Proxy 免费获得的部分：
-调度队列、stale-op 防护、quiesce、显式服务解析）；reflect 层反而更短
-（-40%）；FFI 三件套（component-api + loader）约 1,400 行为纯增量。
