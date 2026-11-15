@@ -10,7 +10,6 @@ license = "MIT"
 
 [workspace.dependencies]
 yacordis = { path = "crates/yacordis" }
-yacordis-macros = { path = "crates/yacordis-macros" }
 yacordis-component-api = { path = "crates/yacordis-component-api" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

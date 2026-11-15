@@ -205,8 +205,53 @@ pub struct BuildOptions {
 /// Entry points for obtaining [`ComponentLibrary`] binaries.
 pub struct Loader;
 
-/// Bundled ast-grep configuration for the unload-contract rules (§4.1).
-const LINT_CONFIG: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/ast-grep-rules/sgconfig.yml");
+/// The bundled ast-grep configuration for the unload-contract rules
+/// (§4.1), embedded at compile time and materialized to a temporary
+/// tree when the lint runs — the crate carries no build-machine paths,
+/// so host binaries embedding these strings stay distributable.
+const LINT_SGCONFIG: &str = include_str!("../ast-grep-rules/sgconfig.yml");
+const LINT_RULES: &[(&str, &str)] = &[
+    (
+        "yacordis-no-ffi-alloc.yml",
+        include_str!("../ast-grep-rules/rules/yacordis-no-ffi-alloc.yml"),
+    ),
+    (
+        "yacordis-no-libc-exit-hooks.yml",
+        include_str!("../ast-grep-rules/rules/yacordis-no-libc-exit-hooks.yml"),
+    ),
+    (
+        "yacordis-no-mutable-static.yml",
+        include_str!("../ast-grep-rules/rules/yacordis-no-mutable-static.yml"),
+    ),
+    (
+        "yacordis-no-raw-thread-spawn.yml",
+        include_str!("../ast-grep-rules/rules/yacordis-no-raw-thread-spawn.yml"),
+    ),
+    (
+        "yacordis-no-tokio-scheduling.yml",
+        include_str!("../ast-grep-rules/rules/yacordis-no-tokio-scheduling.yml"),
+    ),
+];
+
+/// Materialize the embedded rule set into a per-process temporary tree
+/// (ast-grep reads its configuration from disk; `ruleDirs` resolves
+/// relative to the config file). Keyed by process id under the system
+/// temp dir and left to the OS cleanup.
+fn lint_config_tree() -> String {
+    use std::sync::OnceLock;
+    static TREE: OnceLock<String> = OnceLock::new();
+    TREE.get_or_init(|| {
+        let root = std::env::temp_dir().join(format!("yacordis-lint-rules-{}", std::process::id()));
+        let rules = root.join("rules");
+        std::fs::create_dir_all(&rules).expect("create the lint rule tree");
+        std::fs::write(root.join("sgconfig.yml"), LINT_SGCONFIG).expect("write sgconfig.yml");
+        for (name, text) in LINT_RULES {
+            std::fs::write(rules.join(name), text).expect("write the lint rule");
+        }
+        root.join("sgconfig.yml").to_string_lossy().into_owned()
+    })
+    .clone()
+}
 
 /// Run the bundled ast-grep unload-contract lint over a component source
 /// tree. Returns the combined findings (rejecting the build) when the
@@ -214,7 +259,7 @@ const LINT_CONFIG: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/ast-grep-rules/s
 /// ast-grep is unavailable (the lint is best-effort).
 pub fn lint_source(source_dir: impl AsRef<Path>) -> Result<(), String> {
     let output = std::process::Command::new("ast-grep")
-        .args(["scan", "--config", LINT_CONFIG])
+        .args(["scan", "--config", &lint_config_tree()])
         .arg(source_dir.as_ref())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
