@@ -1,19 +1,14 @@
-//! Concurrency stress for the work substrate: the drain-before-rollback
-//! protocol under cross-thread contention.
-//!
-//! Eight threads run install → spawn-works → dispose cycles, each fiber
-//! starting blocking units (which ignore their token) plus futures
-//! (which park until aborted). If any drain leaks a unit past rollback,
-//! a completion fires after the fiber is gone, or a lock is held across
-//! user code (deadlock), the watchdog fails the run.
+//! Concurrency stress for the work substrate: eight threads run
+//! install → spawn-works → dispose cycles. A leaked drain, a completion
+//! after the fiber is gone, or a deadlock fails via the watchdog.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use yacordis::prelude::*;
 use serde_json::{Value, json};
+use yacordis::prelude::*;
 
 const THREADS: usize = 8;
 const CYCLES: usize = 25;
@@ -24,9 +19,8 @@ fn concurrent_work_spawn_drain_cycles() {
     let ctx = Context::new();
     ctx.set_logger(Arc::new(yacordis::DiscardLogger));
 
-    // Late deliveries: completions that must never fire (delivered only
-    // while the fiber is alive). Any nonzero count after the runs means
-    // a drain leaked past rollback.
+    // Completions that must never fire while the fiber is dead: any
+    // nonzero count means a drain leaked past rollback.
     let late = Arc::new(AtomicU64::new(0));
     let completed = Arc::new(AtomicU64::new(0));
 
@@ -37,9 +31,8 @@ fn concurrent_work_spawn_drain_cycles() {
         let completed = completed.clone();
         let done_tx = done_tx.clone();
         std::thread::spawn(move || {
-            // Each thread isolates its probe service, mirroring stress.rs:
-            // per-thread assertions stay deterministic while the shared
-            // registry and work substrate stay under contention.
+            // Per-thread isolation keeps assertions deterministic while
+            // the shared work substrate stays under contention.
             let group = ctx.isolate("probe");
             for cycle in 0..CYCLES {
                 let late = late.clone();
@@ -48,10 +41,8 @@ fn concurrent_work_spawn_drain_cycles() {
                     .component(
                         move |ctx: &Context, _: &Value| -> ComponentResult {
                             let (late, completed) = (late.clone(), completed.clone());
-                            // Liveness marker: provide-disposers run AFTER
-                            // the drain phase, so completions delivered
-                            // during a correct drain still see it; a leak
-                            // past rollback does not.
+                            // Liveness marker: provide-disposers run AFTER the
+                            // drain phase, so correct completions still see it.
                             ctx.provide(
                                 "probe",
                                 Arc::new(json!({ "thread": thread, "cycle": cycle })),
@@ -75,8 +66,6 @@ fn concurrent_work_spawn_drain_cycles() {
                                 },
                             )
                             .map_err(ComponentError::new)?;
-                            // A parked future: aborted at the await point
-                            // by the drain phase.
                             ctx.spawn_future(
                                 "parked",
                                 std::future::pending::<Result<Value, ComponentError>>(),
@@ -107,15 +96,14 @@ fn concurrent_work_spawn_drain_cycles() {
             .expect("work substrate deadlocked under contention");
     }
 
-    // Every unit completed exactly once (delivery, not drop: fibers
-    // stayed alive through their own dispose's drain phase).
+    // Delivery, not drop: fibers stayed alive through their own dispose's
+    // drain phase.
     let total = (THREADS * CYCLES * 2) as u64;
     let done = completed.load(Ordering::Relaxed);
     assert_eq!(
         done, total,
         "each unit delivers exactly one completion ({done}/{total})"
     );
-    // And none of them leaked past a rollback boundary.
     assert_eq!(
         late.load(Ordering::Relaxed),
         0,

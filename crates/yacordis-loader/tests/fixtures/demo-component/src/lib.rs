@@ -94,7 +94,8 @@ fn append(path: &str, text: &str) {
         .append(true)
         .open(path)
         .expect("demo component: open log file");
-    file.write_all(text.as_bytes()).expect("demo component: write log");
+    file.write_all(text.as_bytes())
+        .expect("demo component: write log");
 }
 
 register_component!(DemoComponent);

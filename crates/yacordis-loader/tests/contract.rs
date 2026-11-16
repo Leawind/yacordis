@@ -1,13 +1,9 @@
-//! Unload-contract mechanization (§4.1): the ast-grep lint profile
-//! rejects contract-violating component sources before they build, and the
-//! dispose audit collects context handles the component stashed.
-
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use serde_json::json;
 use yacordis::prelude::*;
 use yacordis_loader::{BuildOptions, Loader, lint_source};
-use serde_json::json;
 
 fn ast_grep_available() -> bool {
     std::process::Command::new("ast-grep")
@@ -46,7 +42,10 @@ fn lint_rejects_contract_violations_and_passes_clean_sources() {
         findings.contains("yacordis-no-raw-thread-spawn"),
         "{findings}"
     );
-    assert!(findings.contains("yacordis-no-mutable-static"), "{findings}");
+    assert!(
+        findings.contains("yacordis-no-mutable-static"),
+        "{findings}"
+    );
 
     let clean = scratch_dir("clean");
     std::fs::write(
@@ -104,8 +103,7 @@ fn dispose_audit_collects_stashed_context_handles() {
         .install(&ctx, json!({ "greeting": "hi" }))
         .expect("install");
     let fiber_id = handle.id().expect("fiber id");
-    // The FFI component caches a context handle for its fiber while alive.
-    // (The audit drains what it finds; a later component call re-mints.)
+    // The FFI component caches a context handle per fiber; the audit drains it, a later call re-mints.
     assert!(
         yacordis_loader::audit_fiber_handles(fiber_id) > 0,
         "a live fiber has at least one context handle stashed"

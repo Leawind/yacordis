@@ -1,12 +1,10 @@
-//! Timer service tests: fire-once, intervals, scope-release cancellation.
-
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use serde_json::{Value, json};
 use yacordis::prelude::*;
 use yacordis_timer::{CancelHandle, SleepOutcome, TimerComponent, TimerContextExt};
-use serde_json::{Value, json};
 
 fn install_timer() -> (Context, yacordis::FiberHandle) {
     let ctx = Context::new();
@@ -17,8 +15,7 @@ fn install_timer() -> (Context, yacordis::FiberHandle) {
     (ctx, handle)
 }
 
-/// Poll `check` until it returns true (or the budget expires) so timing
-/// assertions stay robust on slow machines.
+/// Poll `check` until it returns true so timing assertions stay robust on slow machines.
 fn wait_until(budget: Duration, mut check: impl FnMut() -> bool) -> bool {
     let start = Instant::now();
     while start.elapsed() < budget {
@@ -73,7 +70,6 @@ fn unloading_the_fiber_cancels_pending_timeouts() {
         .expect("install worker");
 
     worker.dispose();
-    // Give the wheel ample time to (wrongly) fire if cancellation broke.
     assert!(!wait_until(Duration::from_millis(900), || rx
         .try_recv()
         .is_ok()));
@@ -117,15 +113,8 @@ fn interval_fires_repeatedly_until_cancelled() {
             move |ctx: &Context, _: &Value| -> ComponentResult {
                 let tx = tx.clone();
                 let counter_for_callback = Arc::new(std::sync::atomic::AtomicU32::new(0));
-                // Cancel on the third tick, from inside the callback. A
-                // deadline-based check (setTimeout + counter >= 3) races
-                // the wheel's tick drift — Windows timer coalescing can
-                // push the third tick past the deadline, the condition
-                // never fires, and the interval runs forever. Cancelling
-                // inside the tick that reaches the count is
-                // deterministic: the wheel re-arms before running but
-                // re-checks `cancelled` before invoking, so the next
-                // tick is dropped.
+                // A deadline-based check races wheel tick drift (Windows timer coalescing);
+                // cancelling inside the tick that reaches the count is deterministic.
                 let slot: Arc<Mutex<Option<CancelHandle>>> = Arc::default();
                 let slot_for_callback = Arc::clone(&slot);
                 let handle = ctx
@@ -147,13 +136,11 @@ fn interval_fires_repeatedly_until_cancelled() {
         )
         .expect("install worker");
 
-    // At least three ticks arrive.
     let mut ticks = 0;
     while ticks < 3 {
         rx.recv_timeout(Duration::from_secs(2)).expect("tick");
         ticks += 1;
     }
-    // After cancellation, no further tick within a generous window.
     assert!(!wait_until(Duration::from_millis(300), || rx
         .try_recv()
         .is_ok()));
@@ -169,8 +156,6 @@ fn sleep_elapses_and_unload_wakes_it_early() {
     assert_eq!(outcome, SleepOutcome::Elapsed);
     assert!(start.elapsed() >= Duration::from_millis(35));
 
-    // A worker thread (spawned by a component body) sleeps on the fiber's
-    // behalf; unloading the fiber wakes it with `Cancelled`.
     let (tx, rx) = mpsc::channel::<SleepOutcome>();
     let sleeper = ctx
         .component(
@@ -187,7 +172,6 @@ fn sleep_elapses_and_unload_wakes_it_early() {
         )
         .expect("install sleeper");
 
-    // Let the worker enter its sleep, then unload the fiber.
     std::thread::sleep(Duration::from_millis(80));
     let start = Instant::now();
     sleeper.dispose();
@@ -212,6 +196,5 @@ fn disposing_the_timer_component_shuts_the_wheel_down() {
     assert!(ctx.has(yacordis_timer::TIMER_SERVICE));
     timer_fiber.dispose();
     assert!(!ctx.has(yacordis_timer::TIMER_SERVICE));
-    // New timers fail cleanly instead of silently doing nothing.
     assert!(ctx.set_timeout(Duration::from_millis(1), || {}).is_err());
 }

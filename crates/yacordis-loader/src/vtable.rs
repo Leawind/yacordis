@@ -11,8 +11,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use yacordis_component_api::{ABI_VERSION, Callback, HostVTable, RawBuffer, log_level};
 use serde_json::{Value, json};
+use yacordis_component_api::{ABI_VERSION, Callback, HostVTable, RawBuffer, log_level};
 
 use crate::adapter::{Invocation, SendCallback};
 use crate::handles::{HandleTable, HostObject};

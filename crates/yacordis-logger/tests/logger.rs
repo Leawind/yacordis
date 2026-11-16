@@ -1,10 +1,8 @@
-//! Logger service tests: records, levels, scopes, sink removal.
-
 use std::sync::Arc;
 
+use serde_json::{Value, json};
 use yacordis::prelude::*;
 use yacordis_logger::{LogLevel, LoggerComponent, LoggerContextExt, MemorySink};
-use serde_json::{Value, json};
 
 #[test]
 fn records_flow_to_sinks_with_component_scopes() {
@@ -56,7 +54,6 @@ fn level_threshold_filters_records() {
     ctx.log_warn("visible");
     assert_eq!(memory.records().len(), 1);
 
-    // Root-context records are scoped `root`.
     ctx.log_error("boom");
     let records = memory.records();
     assert_eq!(records[1].level, LogLevel::Error);
@@ -82,9 +79,7 @@ fn sink_removal_and_service_withdrawal() {
     ctx.log_info("dropped");
     assert_eq!(memory.records().len(), 1, "sink removed");
 
-    // Withdrawing the logger component removes the service.
     logger_fiber.dispose();
     assert!(ctx.logger().is_none());
-    // Logging without the service is a no-op, not a panic.
     ctx.log_info("no service, no crash");
 }

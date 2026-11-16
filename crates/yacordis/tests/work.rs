@@ -1,8 +1,6 @@
 //! Framework-mediated concurrency (§4.1 I1): work units are framework
 //! plumbing — registered as effects, drained (cancel + join) before
-//! rollback, completion delivered as framework-initiated calls. These
-//! tests lock the drain-before-rollback protocol and the executor
-//! lifecycle.
+//! rollback, completion delivered as framework-initiated calls.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -11,8 +9,8 @@ use std::task::{Context as TaskContext, Poll, Waker};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use yacordis::prelude::*;
 use serde_json::{Value, json};
+use yacordis::prelude::*;
 
 fn outcome_tag(outcome: &WorkOutcome) -> &'static str {
     match outcome {
@@ -93,12 +91,10 @@ fn unload_joins_in_flight_work_before_rollback() {
     let worker = ctx
         .component(
             move |ctx: &Context, _: &Value| -> ComponentResult {
-                // Ignores the token: unload must block until the unit
-                // returns, then deliver Cancelled (work finished, fiber
-                // cancelled). The sleep starts before `component()` returns
-                // (install quiesces against the global op counter, which
-                // parallel tests may delay further), so the lower bound
-                // on dispose latency stays well under the sleep.
+                // Ignores the token: dispose must block until the unit
+                // returns, then deliver Cancelled. The sleep starts before
+                // `component()` returns (install quiesces), so the lower
+                // bound on dispose latency stays well under the sleep.
                 let tx = tx.clone();
                 ctx.run_blocking(
                     "stubborn",
@@ -145,8 +141,7 @@ fn work_from_a_failing_body_is_drained() {
                         let _ = tx.send(outcome_tag(&outcome));
                     },
                 )?;
-                // The body fails after starting the unit: drain must run
-                // before the eager rollback, with the fiber still alive.
+                // Drain must run before the eager rollback, fiber still alive.
                 Err(ComponentError::new("body fails"))
             },
             json!(null),
@@ -232,7 +227,6 @@ fn future_progresses_via_waker() {
                 let polls = Arc::new(AtomicUsize::new(0));
                 let polls_for_future = polls.clone();
 
-                // Yields once, then completes when woken.
                 let fut = std::future::poll_fn(move |cx: &mut TaskContext<'_>| {
                     let n = polls_for_future.fetch_add(1, Ordering::SeqCst);
                     if n == 0 {
@@ -243,7 +237,6 @@ fn future_progresses_via_waker() {
                     }
                 });
 
-                // Wake it from a foreign thread after a short delay.
                 thread::spawn(move || {
                     let waker = waker_rx
                         .recv_timeout(Duration::from_secs(2))
@@ -293,8 +286,6 @@ fn unload_aborts_a_pending_future() {
         )
         .expect("install worker");
 
-    // Dispose must not hang on the never-completing future: the abort
-    // drops it at the await point.
     worker.dispose();
     assert_eq!(rx.recv_timeout(Duration::from_secs(1)), Ok("cancelled"));
 }
@@ -313,10 +304,8 @@ fn on_done_disposing_its_own_fiber_does_not_deadlock() {
                     |_| Ok(json!(null)),
                     move |ctx, _| {
                         let _ = tx.send("in-callback");
-                        // Drains this fiber's own unit from inside its
-                        // completion: the join must skip the unit
-                        // executing on this thread instead of waiting
-                        // for itself.
+                        // The join must skip the unit executing on this
+                        // thread instead of waiting for itself.
                         ctx.dispose_all();
                         let _ = tx.send("disposed");
                     },
@@ -346,7 +335,6 @@ fn double_wake_delivers_exactly_one_completion() {
                 let polls = Arc::new(AtomicUsize::new(0));
                 let polls_for_future = polls.clone();
 
-                // Yields once; the second poll completes it.
                 let fut = std::future::poll_fn(move |cx: &mut TaskContext<'_>| {
                     let n = polls_for_future.fetch_add(1, Ordering::SeqCst);
                     if n == 0 {
@@ -362,8 +350,7 @@ fn double_wake_delivers_exactly_one_completion() {
                     let _ = tx.send(outcome_tag(&outcome));
                 })?;
 
-                // Wake twice after completion is reachable: the second
-                // enqueue polls a consumed future and must be a no-op.
+                // The second wake polls a consumed future and must be a no-op.
                 thread::spawn(move || {
                     let waker = waker_rx
                         .recv_timeout(Duration::from_secs(2))
@@ -410,7 +397,7 @@ fn abort_before_first_poll_never_runs_the_future() {
                     let handle = ctx.spawn_future("never-polled", fut, move |_, outcome| {
                         let _ = tx.send(outcome_tag(&outcome));
                     })?;
-                    // Cancel before the executor can schedule the first poll.
+                    // Cancel races the executor's first poll.
                     handle.cancel();
                     Ok(())
                 }
@@ -420,7 +407,7 @@ fn abort_before_first_poll_never_runs_the_future() {
         .expect("install worker");
 
     assert_eq!(rx.recv_timeout(Duration::from_secs(1)), Ok("cancelled"));
-    // Give a hypothetical buggy executor ample time to poll anyway.
+    // Ample time for a buggy executor to poll anyway.
     thread::sleep(Duration::from_millis(100));
     assert_eq!(
         polls.load(Ordering::SeqCst),

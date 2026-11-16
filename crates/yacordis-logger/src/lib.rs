@@ -30,8 +30,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock, Weak};
 use std::time::SystemTime;
 
-use yacordis::{Component, ComponentError, ComponentResult, Context};
 use serde_json::Value;
+use yacordis::{Component, ComponentError, ComponentResult, Context};
 
 /// The name under which [`LoggerComponent`] provides [`LoggerService`].
 pub const LOGGER_SERVICE: &str = "logger";

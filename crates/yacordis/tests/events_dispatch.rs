@@ -1,12 +1,9 @@
-//! Listener removal is honored inside an active dispatch (cordis TS
-//! #242): a listener removed mid-dispatch — by an earlier listener in the
-//! same cycle — must not run in that cycle, and `bail` continues past it
-//! to later listeners instead of short-circuiting on it.
+//! Listener removal is honored inside an active dispatch (cordis TS #242).
 
 use std::sync::{Arc, Mutex};
 
-use yacordis::prelude::*;
 use serde_json::{Value, json};
+use yacordis::prelude::*;
 
 fn record(log: &Arc<Mutex<Vec<&'static str>>>, tag: &'static str) {
     log.lock().unwrap().push(tag);
@@ -50,7 +47,6 @@ fn emit_skips_listener_removed_mid_dispatch() {
     ctx.emit("evt", &json!(null));
     assert_eq!(*fired.lock().unwrap(), ["a", "c"]);
 
-    // The removal persists: later dispatches stay clean.
     ctx.emit("evt", &json!(null));
     assert_eq!(*fired.lock().unwrap(), ["a", "c", "a", "c"]);
 }
@@ -82,8 +78,6 @@ fn prepend_listener_removed_mid_dispatch_is_skipped() {
     let ctx = Context::new();
     let fired: Arc<Mutex<Vec<&'static str>>> = Arc::default();
 
-    // `prepend` puts the probe at the head: it runs first and removes
-    // the regular listener registered before it in source order.
     let b_handle = ctx
         .on("evt", {
             let fired = fired.clone();

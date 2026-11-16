@@ -1,10 +1,10 @@
 [package]
 name = "yacordis-component-api"
-description = "Stable C-ABI boundary for yacordis components compiled as cdylib binaries"
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
 license.workspace = true
+rust-version.workspace = true
+description = "Stable C-ABI boundary for yacordis components compiled as cdylib binaries"
 
 [dependencies]
 serde_json = { workspace = true }

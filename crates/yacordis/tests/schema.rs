@@ -1,13 +1,10 @@
-//! Config schemas: validation + default resolution (the
-//! `resolveConfig` equivalent). Locked behaviors: install rejects an
-//! invalid config with a `Failed` fiber and no side effects, update
-//! refuses an invalid config while keeping the previous one, resolved
-//! defaults are visible to the body and persist across restarts.
+//! Config schemas: validation + default resolution (the `resolveConfig`
+//! equivalent).
 
 use std::sync::Arc;
 
-use yacordis::prelude::*;
 use serde_json::{Value, json};
+use yacordis::prelude::*;
 
 fn server_schema() -> Schema {
     Schema::object()
@@ -21,8 +18,6 @@ fn server_schema() -> Schema {
         .build()
 }
 
-/// Provides the resolved config it saw, so tests can observe what the
-/// body actually received.
 fn server_component(ctx: &Context, config: &Value) -> ComponentResult {
     ctx.provide("seen", Arc::new(config.clone()))?;
     Ok(())
@@ -34,7 +29,6 @@ fn schema_rejects_invalid_config_at_install_without_side_effects() {
     let handle = ctx
         .component(WithSchema(server_schema()), json!({ "uri": "" }))
         .expect("install");
-    // Blank uri fails min(4); the fiber is Failed and provided nothing.
     assert_eq!(handle.state(), FiberState::Failed);
     let error = handle.error().expect("diagnostic error");
     assert!(error.contains("at least 4 characters"), "{error}");
@@ -48,13 +42,11 @@ fn schema_resolves_defaults_for_the_body_and_across_restarts() {
         .component(WithSchema(server_schema()), json!({ "uri": "pg://host" }))
         .expect("install");
     assert!(handle.is_active());
-    // The body saw the default port filled in.
     assert_eq!(
         ctx.get::<Value>("seen").map(|v| v.as_ref().clone()),
         Some(json!({ "uri": "pg://host", "port": 8080 }))
     );
 
-    // Restarts persist the resolved config (not the raw one).
     handle.restart().expect("restart");
     assert_eq!(
         ctx.get::<Value>("seen").map(|v| v.as_ref().clone()),
@@ -70,21 +62,18 @@ fn schema_rejects_invalid_update_and_keeps_previous_config() {
         .expect("install");
     assert!(handle.is_active());
 
-    // Invalid update: unknown field + out-of-range port.
     let err = handle
         .update(json!({ "uri": "pg://other", "port": 0, "typo": true }))
         .expect_err("invalid update");
     assert!(err.to_string().contains("port"), "{err}");
     assert!(err.to_string().contains("typo"), "{err}");
 
-    // The fiber kept running on the previous (resolved) config.
     assert!(handle.is_active());
     assert_eq!(
         ctx.get::<Value>("seen").map(|v| v.as_ref().clone()),
         Some(json!({ "uri": "pg://host", "port": 8080 }))
     );
 
-    // A valid update goes through.
     handle
         .update(json!({ "uri": "pg://next", "port": 9090 }))
         .expect("valid update");
@@ -119,7 +108,6 @@ fn schema_reports_unknown_fields_and_type_mismatches() {
         "{rendered:?}"
     );
 
-    // allow_unknown silences typo reports but keeps real violations.
     let lenient = Schema::object()
         .req("mode", Schema::enum_of([json!("fast"), json!("safe")]))
         .allow_unknown()
@@ -130,7 +118,6 @@ fn schema_reports_unknown_fields_and_type_mismatches() {
             .is_empty()
     );
 
-    // Root-level type mismatch (config root is not an object).
     let diagnostics = lenient.validate(&json!("not an object"));
     assert!(diagnostics[0].message.contains("expected an object"));
 }
@@ -144,8 +131,8 @@ fn components_without_schema_are_unaffected() {
     assert!(handle.is_active());
 }
 
-/// Wrapper pairing a schema with a plain body function (closures have
-/// no schema support of their own).
+/// Wrapper pairing a schema with a plain body function (closures have no
+/// schema support of their own).
 struct WithSchema(Schema);
 
 impl yacordis::Component for WithSchema {

@@ -1,12 +1,7 @@
-//! `#[component]` attribute macro: declarations flow into the runtime
-//! (gating via inject, cycle diagnostics via provides), apply delegates
-//! to the plain function, and the generated adapter keeps fiber
-//! semantics identical to hand-written components.
-
 use std::sync::Arc;
 
-use yacordis::prelude::*;
 use serde_json::{Value, json};
+use yacordis::prelude::*;
 
 #[component(
     name = "database",
@@ -22,14 +17,12 @@ fn database_component(ctx: &Context, _config: &Value) -> ComponentResult {
 fn component_macro_declarations_gate_and_provide() {
     let ctx = Context::new();
 
-    // Missing required `config`: the component pends, body unexecuted.
     let handle = ctx
         .component(DatabaseComponent, json!(null))
         .expect("install");
     assert_eq!(handle.state(), FiberState::Pending);
     assert!(!ctx.has("db"));
 
-    // Satisfy the requirement: reactive activation, service provided.
     ctx.provide("config", Arc::new(json!({ "uri": "pg://x" })))
         .expect("provide config");
     assert_eq!(handle.state(), FiberState::Active);
@@ -38,8 +31,6 @@ fn component_macro_declarations_gate_and_provide() {
         Some(json!({ "connected": true }))
     );
 
-    // Declarations are introspectable (name + provides) without running
-    // the body again: the cycle diagnostics see them.
     let summaries = ctx.installed_components();
     let summary = summaries
         .iter()
@@ -52,9 +43,6 @@ fn component_macro_declarations_gate_and_provide() {
 fn component_macro_defaults_name_and_generates_pascal_struct() {
     let ctx = Context::new();
 
-    /// A component declared with no attributes: the struct name is the
-    /// PascalCase of the function name; the component name defaults to the
-    /// function name.
     #[component]
     fn echo_tube(ctx: &Context, _config: &Value) -> ComponentResult {
         ctx.provide("echo", Arc::new(json!("on")))?;
@@ -77,8 +65,6 @@ fn component_macro_defaults_name_and_generates_pascal_struct() {
 fn component_macro_provides_feed_cycle_diagnostics() {
     let ctx = Context::new();
 
-    // Two components whose declared provides close a loop among pending
-    // required injects: the diagnostic must fire.
     #[component(inject(required = ["a"]), provides = ["b"])]
     fn needs_a(ctx: &Context, _config: &Value) -> ComponentResult {
         let _ = ctx;
@@ -98,12 +84,7 @@ fn component_macro_provides_feed_cycle_diagnostics() {
     assert_eq!(cycles[0].len(), 2, "both members reported");
 }
 
-/// `schema = <expr>` rides the declared config schema on the generated
-/// adapter: a violating config fails the fiber at install with zero
-/// side effects (the body never runs), a passing one is resolved
-/// (defaults filled) before the body sees it, and a violating update
-/// leaves the running config untouched. This locks the macro →
-/// `Component::schema` wiring (§6 item 4).
+/// Locks the macro → `Component::schema` wiring (§6 item 4).
 #[test]
 fn component_macro_schema_gates_install_and_update() {
     let ctx = Context::new();
@@ -120,7 +101,6 @@ fn component_macro_schema_gates_install_and_update() {
         Ok(())
     }
 
-    // Violating config: the fiber fails at install, body never ran.
     let handle = ctx
         .component(ValidatedComponent, json!({ "uri": 42 }))
         .expect("install still returns a handle");
@@ -132,7 +112,6 @@ fn component_macro_schema_gates_install_and_update() {
     );
     assert!(!ctx.has("db"), "zero side effects: the body never ran");
 
-    // Passing config: body runs with the resolved (default-filled) form.
     let handle = ctx
         .component(ValidatedComponent, json!({ "uri": "pg://x" }))
         .expect("install ok");
@@ -142,7 +121,6 @@ fn component_macro_schema_gates_install_and_update() {
         Some(json!({ "uri": "pg://x", "port": 5432 }))
     );
 
-    // A violating update is rejected; the running config survives.
     handle
         .update(json!({ "uri": "pg://y", "port": 0 }))
         .expect_err("update rejected by the declared schema");

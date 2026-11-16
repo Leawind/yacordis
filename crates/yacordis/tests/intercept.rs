@@ -1,17 +1,11 @@
 //! Service intercepts (§2.7): config-layered overrides along the fiber
-//! chain — a layer set on a fiber is visible to that fiber and its
-//! **descendants** only (upstream PR #90/#206 semantics), nearest
-//! ancestor wins, shallow object merge, non-object layers replace,
-//! typed services untouched. Entries are effects: unloading the
-//! registering fiber removes its layer (I2 cleanup), and intercepts
-//! never disturb epochs or notifications.
+//! chain, upstream PR #90/#206 semantics.
 
 use std::sync::Arc;
 
-use yacordis::prelude::*;
 use serde_json::{Value, json};
+use yacordis::prelude::*;
 
-/// Provides a base JSON config object.
 #[component(name = "base", provides = ["cfg"])]
 fn base_component(ctx: &Context, _config: &Value) -> ComponentResult {
     ctx.provide(
@@ -38,9 +32,7 @@ fn intercept_layer_is_visible_to_self_and_descendants() {
         json!({ "host": "localhost", "port": 80, "tls": false })
     );
 
-    // The interceptor fiber's layer: visible to itself and its
-    // descendants, invisible to the root view (siblings are not
-    // ancestors — upstream PR #90/#206 semantics).
+    // Siblings are not ancestors — the layer must be invisible to the root view.
     let interceptor = ctx
         .component(
             |ctx: &Context, _: &Value| -> ComponentResult {
@@ -71,8 +63,6 @@ fn intercept_layer_is_visible_to_self_and_descendants() {
         "root view unaffected by a sibling's layer"
     );
 
-    // Unloading the interceptor drops the layer: a fresh descendant of
-    // the root sees the base again (I2: entries die with their fiber).
     interceptor.dispose();
     let after = ctx
         .component(
@@ -96,13 +86,10 @@ fn nearest_ancestor_layer_wins_and_layers_compose() {
     ctx.component(BaseComponent, json!(null))
         .expect("install base");
 
-    // Parent fiber sets one layer.
     let parent = ctx
         .component(
             |ctx: &Context, _: &Value| -> ComponentResult {
                 ctx.intercept("cfg", json!({ "port": 8080 }))?;
-                // A child fiber under it sets a nearer layer; the child's
-                // view sees both, its own winning.
                 let child = ctx
                     .component(
                         |ctx: &Context, _: &Value| -> ComponentResult {
@@ -112,7 +99,6 @@ fn nearest_ancestor_layer_wins_and_layers_compose() {
                                 json!({ "host": "localhost", "port": 8080, "tls": true }),
                                 "child sees parent layer + own layer"
                             );
-                            // A grandchild overrides further: nearest wins.
                             let grandchild = ctx
                                 .component(
                                     |ctx: &Context, _: &Value| -> ComponentResult {

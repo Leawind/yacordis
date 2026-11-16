@@ -38,8 +38,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use yacordis::{Component, ComponentError, ComponentResult, Context, Disposer};
 use serde_json::Value;
+use yacordis::{Component, ComponentError, ComponentResult, Context, Disposer};
 
 /// The name under which [`TimerComponent`] provides [`TimerWheel`].
 pub const TIMER_SERVICE: &str = "timer";

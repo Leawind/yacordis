@@ -1,15 +1,10 @@
-//! Repository index: sha-256 correctness (NIST vectors), semver
-//! constraint matching, best-version resolution, and end-to-end
-//! install with checksum + ABI verification against a real fixture
-//! artifact (no network: local artifact paths).
-
 use std::path::{Path, PathBuf};
 
+use serde_json::json;
 use yacordis_loader::{
     BuildOptions, Constraint, Loader, RegistryError, RegistryIndex, Repository, Sha256Verifier,
     Version, sha256_hex,
 };
-use serde_json::json;
 
 #[test]
 fn sha256_matches_nist_vectors() {
@@ -89,7 +84,6 @@ fn resolve_picks_the_highest_matching_version() {
 
 #[test]
 fn install_verifies_checksum_and_abi_then_loads() {
-    // Build the real fixture artifact and hash the actual bytes.
     let fixture_cdylib = build_fixture();
     let bytes = std::fs::read(&fixture_cdylib).expect("artifact bytes");
     let digest = sha256_hex(&bytes);
@@ -115,7 +109,6 @@ fn install_verifies_checksum_and_abi_then_loads() {
         .expect("install");
     assert_eq!(component.manifest.name.as_deref(), Some("demo-greeter"));
 
-    // Corrupted checksum is rejected before any code is mapped.
     let bad_index = RegistryIndex::from_json(&json!({
         "components": {
             "demo-greeter": [
@@ -136,7 +129,6 @@ fn install_verifies_checksum_and_abi_then_loads() {
         .expect("checksum mismatch");
     assert!(matches!(error, RegistryError::Checksum { .. }), "{error}");
 
-    // Wrong ABI is rejected.
     let abi_index = RegistryIndex::from_json(&json!({
         "components": {
             "demo-greeter": [

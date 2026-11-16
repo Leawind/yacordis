@@ -6,8 +6,8 @@
 
 use std::sync::Arc;
 
-use yacordis::prelude::*;
 use serde_json::{Value, json};
+use yacordis::prelude::*;
 
 struct Database {
     uri: String,

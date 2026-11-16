@@ -1,12 +1,8 @@
-//! Acceptance tests for the cordis core: dynamic install/uninstall,
-//! revertible effects, reactive dependency resolution, events.
-
 use std::sync::{Arc, Mutex};
 
-use yacordis::prelude::*;
 use serde_json::{Value, json};
+use yacordis::prelude::*;
 
-/// Shared append-only log for asserting setup/dispose ordering.
 type Log = Arc<Mutex<Vec<String>>>;
 
 fn log_fn(log: &Log, msg: &str) -> impl FnOnce() + Send + 'static {
@@ -19,7 +15,7 @@ fn push(log: &Log, msg: &str) {
     log.lock().unwrap().push(msg.to_owned());
 }
 
-/// A disposer that records its execution (Box coercion needs the target type).
+/// Box coercion needs the target type known.
 fn dispose_log(log: &Log, msg: &str) -> Disposer {
     Box::new(log_fn(log, msg))
 }
@@ -32,10 +28,6 @@ fn _keep_log_fn(f: impl FnOnce() + Send + 'static) -> Disposer {
 fn logged(log: &Log) -> Vec<String> {
     log.lock().unwrap().clone()
 }
-
-// ---------------------------------------------------------------------
-// 1. Dynamic install/uninstall with full reverse-order reversion
-// ---------------------------------------------------------------------
 
 #[test]
 fn dynamic_install_uninstall_reverts_in_reverse_order() {
@@ -77,14 +69,9 @@ fn dynamic_install_uninstall_reverts_in_reverse_order() {
     );
     assert_eq!(handle.state(), FiberState::Disposed);
 
-    // Disposing twice is a no-op.
     assert!(!handle.dispose());
     assert_eq!(logged(&log).len(), 4);
 }
-
-// ---------------------------------------------------------------------
-// 2. Nested effects are claimed by their enclosing effect
-// ---------------------------------------------------------------------
 
 #[test]
 fn nested_effects_cascade_to_outer_dispose() {
@@ -105,8 +92,7 @@ fn nested_effects_cascade_to_outer_dispose() {
         .expect("outer effect")
     };
 
-    // Disposing the outer effect reverts the inner one too (v4 claim
-    // semantics), inner first.
+    // v4 claim semantics: the enclosing effect's dispose reverts the inner one too.
     outer.dispose();
     assert_eq!(
         logged(&log),
@@ -119,11 +105,6 @@ fn nested_effects_cascade_to_outer_dispose() {
     );
     assert!(!outer.is_alive());
 }
-
-// ---------------------------------------------------------------------
-// 3. Reactive dependency resolution: pending -> active -> deactivate
-//    on provider loss, reactivate on provider return
-// ---------------------------------------------------------------------
 
 #[test]
 fn dependents_follow_their_provider_through_install_cycles() {
@@ -150,7 +131,6 @@ fn dependents_follow_their_provider_through_install_cycles() {
         }
     };
 
-    // A consumer that *declares* its dependency (reactive coeffect).
     struct ConsumerComponent(Log);
     impl Component for ConsumerComponent {
         fn name(&self) -> Option<&str> {
@@ -173,14 +153,12 @@ fn dependents_follow_their_provider_through_install_cycles() {
         }
     }
 
-    // Consumer installed first: stays pending, body unexecuted.
     let consumer_fiber = ctx
         .component_dyn(Arc::new(ConsumerComponent(log.clone())), json!(null))
         .expect("install consumer");
     assert_eq!(consumer_fiber.state(), FiberState::Pending);
     assert!(logged(&log).is_empty());
 
-    // Provider arrives: the consumer activates reactively.
     let provider_arc = Arc::new(provider.clone()) as Arc<dyn Component>;
     let provider_fiber = ctx
         .component_dyn(provider_arc, json!({"uri": "pg://x"}))
@@ -189,7 +167,6 @@ fn dependents_follow_their_provider_through_install_cycles() {
     assert!(consumer_fiber.is_active());
     assert_eq!(logged(&log), ["provider:live", "consumer:live(pg://x)"]);
 
-    // Provider leaves: the consumer deactivates, its effects revert.
     provider_fiber.dispose();
     assert_eq!(consumer_fiber.state(), FiberState::Pending);
     assert_eq!(
@@ -202,7 +179,6 @@ fn dependents_follow_their_provider_through_install_cycles() {
         ]
     );
 
-    // Provider returns (fresh install): the consumer reloads.
     let again = ctx
         .component_dyn(
             Arc::new(provider.clone()) as Arc<dyn Component>,
@@ -215,10 +191,6 @@ fn dependents_follow_their_provider_through_install_cycles() {
     again.dispose();
     assert_eq!(consumer_fiber.state(), FiberState::Pending);
 }
-
-// ---------------------------------------------------------------------
-// 4. Optional dependencies never gate activation
-// ---------------------------------------------------------------------
 
 #[test]
 fn optional_dependencies_do_not_block() {
@@ -233,8 +205,6 @@ fn optional_dependencies_do_not_block() {
     let handle = ctx.component(with_optional, json!(null)).expect("install");
     assert!(handle.is_active());
 
-    // An optional provider appearing later does not reload the fiber but
-    // becomes visible through the global store.
     let provider = ctx
         .component(
             |ctx: &Context, _cfg: &Value| -> ComponentResult {
@@ -250,10 +220,6 @@ fn optional_dependencies_do_not_block() {
     assert!(handle.is_active(), "optional loss must not deactivate");
 }
 
-// ---------------------------------------------------------------------
-// 5. Typed/raw service access and set() rules
-// ---------------------------------------------------------------------
-
 #[test]
 fn service_access_channels_and_set_rules() {
     let ctx = Context::new();
@@ -264,7 +230,6 @@ fn service_access_channels_and_set_rules() {
     assert_eq!(ctx.get::<String>("root-svc"), None, "type mismatch -> None");
     assert!(ctx.has("root-svc"));
 
-    // set() requires a prior provide on the same fiber.
     assert!(matches!(
         ctx.set("missing", Arc::new(1_u32)),
         Err(CordisError::NotProvided { .. })
@@ -273,7 +238,6 @@ fn service_access_channels_and_set_rules() {
         .expect("set own service");
     assert_eq!(ctx.get::<u32>("root-svc").map(|v| *v), Some(43));
 
-    // set() from another fiber is rejected.
     let other = ctx
         .component(
             |ctx: &Context, _cfg: &Value| -> ComponentResult {
@@ -286,7 +250,6 @@ fn service_access_channels_and_set_rules() {
         .expect("install");
     assert!(other.is_active());
 
-    // Duplicate provide is a conflict.
     let dupe = ctx
         .component(
             |ctx: &Context, _cfg: &Value| -> ComponentResult {
@@ -299,10 +262,6 @@ fn service_access_channels_and_set_rules() {
     assert_eq!(dupe.state(), FiberState::Failed);
     assert!(dupe.error().is_some());
 }
-
-// ---------------------------------------------------------------------
-// 6. Event modes
-// ---------------------------------------------------------------------
 
 #[test]
 fn event_modes_emit_once_bail_waterfall_and_removal() {
@@ -329,13 +288,11 @@ fn event_modes_emit_once_bail_waterfall_and_removal() {
     ctx.emit("tick", &json!({"n": 1}));
     assert_eq!(logged(&log), ["h0", "h1:1"]);
 
-    // Removing via handle.
     h1.dispose();
     log.lock().unwrap().clear();
     ctx.emit("tick", &json!({"n": 2}));
     assert_eq!(logged(&log), ["h0"]);
 
-    // once fires exactly once.
     log.lock().unwrap().clear();
     ctx.once("flash", {
         let log = log.clone();
@@ -349,12 +306,10 @@ fn event_modes_emit_once_bail_waterfall_and_removal() {
     ctx.emit("flash", &Value::Null);
     assert_eq!(logged(&log), ["flash"]);
 
-    // bail: first Some short-circuits.
     ctx.on("pick", |_, _| Some(json!(1))).expect("on");
     ctx.on("pick", |_, _| Some(json!(2))).expect("on");
     assert_eq!(ctx.bail("pick", &Value::Null), Some(json!(1)));
 
-    // waterfall: middlewares run in registration order, fallback terminates.
     ctx.middleware("pipeline", |_, mut value, next| {
         value["extra"] = json!(true);
         next(value)
@@ -408,10 +363,6 @@ fn registering_on_a_disposed_fiber_fails() {
     ));
 }
 
-// ---------------------------------------------------------------------
-// 7. update() restart and Failed recovery
-// ---------------------------------------------------------------------
-
 #[test]
 fn update_restarts_and_clears_failures() {
     let ctx = Context::new();
@@ -421,7 +372,6 @@ fn update_restarts_and_clears_failures() {
         #[allow(dead_code)]
         url: String,
     }
-    // Fails unless config has a "url".
     let broker = {
         let log = log.clone();
         move |ctx: &Context, config: &Value| -> ComponentResult {
@@ -452,23 +402,19 @@ fn update_restarts_and_clears_failures() {
         .expect("install returns handle");
     assert_eq!(fiber.state(), FiberState::Failed);
     assert!(fiber.error().is_some());
-    // Failed body effects were rolled back.
     assert!(logged(&log).is_empty());
     assert!(!ctx.has("broker"));
 
-    // update() clears the failure and restarts.
     fiber.update(json!({"url": "amqp://q"})).expect("update");
     assert!(fiber.is_active());
     assert_eq!(logged(&log), ["broker:live(amqp://q)"]);
     assert!(ctx.has("broker"));
 
-    // update() with a bad config fails again; previous effects revert.
     assert!(fiber.update(json!({})).is_err());
     assert_eq!(fiber.state(), FiberState::Failed);
     assert_eq!(logged(&log), ["broker:live(amqp://q)", "broker:down"]);
     assert!(!ctx.has("broker"));
 
-    // restart() reports the failure until update clears it.
     assert!(fiber.restart().is_err());
     fiber.update(json!({"url": "amqp://q2"})).expect("recover");
     assert_eq!(
@@ -481,10 +427,6 @@ fn update_restarts_and_clears_failures() {
     );
     assert_eq!(fiber.config().expect("config"), json!({"url": "amqp://q2"}));
 }
-
-// ---------------------------------------------------------------------
-// 8. Multiple instances of one component are independent
-// ---------------------------------------------------------------------
 
 #[test]
 fn multiple_instances_are_independent() {
@@ -505,7 +447,6 @@ fn multiple_instances_are_independent() {
     };
 
     let a = ctx.component(worker, json!({"id": 1})).expect("a");
-    // Same component logic, fresh install.
     let worker2 = |ctx: &Context, config: &Value| -> ComponentResult {
         ctx.provide(
             "worker2",
@@ -522,10 +463,6 @@ fn multiple_instances_are_independent() {
     assert_eq!(a.state(), FiberState::Disposed);
     assert!(ctx.has("worker2"), "other instance survives");
 }
-
-// ---------------------------------------------------------------------
-// 9. ctx.inject() sugar with dependency gating
-// ---------------------------------------------------------------------
 
 #[test]
 fn inject_sugar_gates_on_dependencies() {
@@ -548,16 +485,10 @@ fn inject_sugar_gates_on_dependencies() {
     assert!(*gate.lock().unwrap());
 }
 
-// ---------------------------------------------------------------------
-// 10. Re-entrancy: components install/components and listeners mutate state
-// ---------------------------------------------------------------------
-
 #[test]
 fn reentrant_registration_from_listeners_and_bodies() {
     let ctx = Context::new();
 
-    // A listener that installs a component, which provides a service and
-    // registers another listener, which provides another service.
     let installer = ctx
         .on("boot", |ctx: &Context, _| {
             let inner = ctx
@@ -582,13 +513,11 @@ fn reentrant_registration_from_listeners_and_bodies() {
         Some(json!("inner-listener"))
     );
 
-    // Dispose the listener handle: the installed component keeps living
-    // (it was a normal install, not an effect of the listener).
+    // The installed component keeps living: a normal install, not an effect of the listener.
     installer.dispose();
     ctx.emit("boot", &Value::Null);
     assert!(ctx.has("inner-svc"));
 
-    // A component body installing a child component: child dies with parent.
     let child_gone: Arc<Mutex<bool>> = Arc::default();
     let child_gone2 = child_gone.clone();
     let parent = ctx
@@ -621,10 +550,6 @@ fn reentrant_registration_from_listeners_and_bodies() {
     );
     let _ = installer;
 }
-
-// ---------------------------------------------------------------------
-// 11. internal/* lifecycle events
-// ---------------------------------------------------------------------
 
 #[test]
 fn internal_events_report_lifecycle() {
@@ -671,9 +596,7 @@ fn internal_events_report_lifecycle() {
         .expect("install svc");
     svc.dispose();
 
-    // internal/status carries the fiber summary plus the OLD state
-    // (cordis v4 parity): pending -> active at activation, and
-    // active -> disposed at teardown.
+    // internal/status carries the OLD state, not the new one (cordis v4 parity).
     let events = logged(&log);
     assert!(
         events.contains(&"status:anonymous:pending->active".to_owned()),
@@ -689,10 +612,6 @@ fn internal_events_report_lifecycle() {
         "{events:?}"
     );
 }
-
-// ---------------------------------------------------------------------
-// 12. Panicking components fail their fiber instead of the host
-// ---------------------------------------------------------------------
 
 #[test]
 fn panicking_component_becomes_failed_fiber() {
@@ -710,7 +629,6 @@ fn panicking_component_becomes_failed_fiber() {
     assert_eq!(fiber.state(), FiberState::Failed);
     assert!(fiber.error().expect("error message").contains("boom"));
 
-    // The runtime stays healthy: new components install fine.
     let ok = ctx
         .component(
             |_: &Context, _: &Value| -> ComponentResult { Ok(()) },
@@ -719,10 +637,6 @@ fn panicking_component_becomes_failed_fiber() {
         .expect("install after panic");
     assert!(ok.is_active());
 }
-
-// ---------------------------------------------------------------------
-// 13. Typed events
-// ---------------------------------------------------------------------
 
 #[test]
 fn typed_events_round_trip() {
@@ -749,25 +663,18 @@ fn typed_events_round_trip() {
     })
     .expect("on_event");
 
-    // Below threshold: no bail value; payload round-trips.
     assert_eq!(ctx.bail_event::<PingEvent>(&Ping { seq: 1 }), None);
     assert_eq!(ctx.bail_event::<PingEvent>(&Ping { seq: 3 }), Some(30));
 
-    // Typed emit dispatches on the string key (observable via bail).
+    // emit dispatches on the string key; observable only via a listener.
     ctx.emit_event::<PingEvent>(&Ping { seq: 4 });
 }
 
-// ---------------------------------------------------------------------
-// 14. Cross-batch disposal: global reverse-registration order
-// ---------------------------------------------------------------------
-
-/// An effect registered outside the body's scope (an event listener
-/// firing after the body completed) lands in a later batch on the same
-/// fiber. Disposal must follow global reverse-registration order —
-/// later batch first — so the cascade fired by an earlier batch's
-/// disposers (service withdrawal, dependent deactivation) never
-/// observes the fiber's still-live later registrations. TS keeps one
-/// reverse-ordered disposables list; our batches concatenate to it.
+/// An effect registered outside the body's scope (an event listener firing
+/// after the body completed) lands in a later batch on the same fiber.
+/// Disposal must follow global reverse-registration order across batches —
+/// TS keeps one reverse-ordered disposables list; our batches concatenate
+/// to it.
 #[test]
 fn disposal_is_reverse_registration_across_effect_batches() {
     let ctx = Context::new();
@@ -784,9 +691,8 @@ fn disposal_is_reverse_registration_across_effect_batches() {
                     Ok(Some(dispose_log(&log, "a:dispose")))
                 }
             })?;
-            // Fires after the body completes: `later/b` attaches outside
-            // the body's scope, forming a second batch on this fiber
-            // (registered through the fiber's own context).
+            // Fires after the body completes: `later/b` forms a second batch
+            // on this fiber.
             own.on("later", {
                 let own = own.clone();
                 let log = log.clone();
@@ -809,8 +715,6 @@ fn disposal_is_reverse_registration_across_effect_batches() {
     let handle = ctx.component(component, json!(null)).expect("install");
     assert!(handle.is_active());
 
-    // Fire after the body: `b` joins a fresh batch, registered after
-    // everything in the body batch.
     ctx.emit("later", &json!(null));
     assert_eq!(logged(&log), ["a:setup", "b:setup"]);
 

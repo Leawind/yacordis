@@ -10,8 +10,8 @@ use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use yacordis::prelude::*;
 use serde_json::{Value, json};
+use yacordis::prelude::*;
 
 const THREADS: usize = 8;
 const CYCLES: usize = 40;
@@ -22,8 +22,7 @@ fn concurrent_install_dispose_cycles_across_isolation_groups() {
     let ctx = Context::new();
     ctx.set_logger(Arc::new(yacordis::DiscardLogger));
 
-    // A long-lived shared listener + event traffic, so the hook table is
-    // also under contention. The counter lives in the listener itself.
+    // Shared listener + event traffic, so the hook table is also under contention.
     let pings = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let ping_counter = Arc::clone(&pings);
     ctx.on("stress/ping", move |_, _| {
@@ -37,9 +36,8 @@ fn concurrent_install_dispose_cycles_across_isolation_groups() {
         let ctx = ctx.clone();
         let done_tx = done_tx.clone();
         std::thread::spawn(move || {
-            // Each thread gets its own isolation group FOR THE SERVICE
-            // NAME itself, so per-thread assertions stay deterministic
-            // while the shared registry/locks stay under contention.
+            // Per-thread isolation of the service name keeps assertions
+            // deterministic while shared locks stay under contention.
             let group = ctx.isolate("database");
             for cycle in 0..CYCLES {
                 let provider = group
@@ -73,8 +71,7 @@ fn concurrent_install_dispose_cycles_across_isolation_groups() {
 
                 provider.dispose();
                 // Cascaded deactivation is eventually-consistent under
-                // concurrent lifecycle activity (the sync counterpart of
-                // awaiting v4's inertia); assert the settled state.
+                // concurrent lifecycle activity; assert the settled state.
                 let mut settled = false;
                 for _ in 0..20_000 {
                     if consumer.state() == FiberState::Pending {
@@ -91,20 +88,16 @@ fn concurrent_install_dispose_cycles_across_isolation_groups() {
     }
     drop(done_tx);
 
-    // Watchdog: if any scheduler op is lost or a lock is held across user
-    // code, threads never finish and this fails instead of hanging forever.
     for _ in 0..THREADS {
         done_rx
             .recv_timeout(WATCHDOG)
             .expect("threads deadlocked or lost wakeups");
     }
 
-    // Event traffic actually flowed across threads.
     assert!(
         pings.load(std::sync::atomic::Ordering::Relaxed) > 0,
         "listener under contention must have fired"
     );
-    // The runtime ends empty and healthy.
     ctx.quiesce();
     assert!(
         ctx.provided_services().is_empty(),

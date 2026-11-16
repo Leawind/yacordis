@@ -7,8 +7,8 @@
 //! victim's next component call would fail with `run_blocking failed` (the
 //! regression seen as a flaky e2e under parallel test threads).
 
-use yacordis::prelude::*;
 use serde_json::{Value, json};
+use yacordis::prelude::*;
 
 #[test]
 fn fiber_ids_are_unique_across_runtimes() {

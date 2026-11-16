@@ -1,13 +1,9 @@
-//! End-to-end proof of runtime binary component installation: cargo-build a
-//! real cdylib component from source, load it into a running host, and
-//! drive its full lifecycle across the C ABI.
-
 use std::path::Path;
 use std::sync::Arc;
 
+use serde_json::{Value, json};
 use yacordis::prelude::*;
 use yacordis_loader::{BuildOptions, Loader};
-use serde_json::{Value, json};
 
 fn fixture_dir() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/demo-component")
@@ -25,7 +21,6 @@ fn build_options() -> BuildOptions {
 
 #[test]
 fn full_binary_component_lifecycle() {
-    // 1. Build the component from source (the developer path) and load it.
     let component =
         Loader::build_and_load(fixture_dir(), &build_options()).expect("build and load");
     assert_eq!(component.manifest.name.as_deref(), Some("demo-greeter"));
@@ -35,12 +30,10 @@ fn full_binary_component_lifecycle() {
     let ctx = Context::new();
     ctx.set_logger(Arc::new(yacordis::DiscardLogger));
 
-    // 2. Host provides the dependency the component requires, then installs.
     ctx.provide("database", Arc::new(json!({ "uri": "pg://host/test" })))
         .expect("provide");
 
-    // A native consumer of the FFI-provided service: it only activates
-    // once the *binary component* provides `greeter`.
+    // A native consumer that only activates once the binary component provides `greeter`.
     let consumer = ctx
         .inject(Inject::required(&["greeter"]), |ctx: &Context| {
             assert!(ctx.get::<Value>("greeter").is_some(), "FFI service visible");
@@ -49,8 +42,6 @@ fn full_binary_component_lifecycle() {
         .expect("install consumer");
     assert_eq!(consumer.state(), FiberState::Pending);
 
-    // 3. Install the binary component: it activates and its service feeds
-    //    the native consumer reactively.
     let log_path = build_options()
         .target_dir
         .unwrap()
@@ -69,8 +60,6 @@ fn full_binary_component_lifecycle() {
         "consumer activated by FFI service"
     );
 
-    // 4. Events dispatched by the host reach the component listener; the
-    //    listener reads the host-provided service through the ABI.
     let reply = ctx
         .bail("greet", &json!({ "who": "world" }))
         .expect("bail reply");
@@ -80,11 +69,9 @@ fn full_binary_component_lifecycle() {
         "component listener answer"
     );
 
-    // 5. The provided service is typed-downcastable natively.
     let greeter = ctx.get::<Value>("greeter").expect("greeter service");
     assert_eq!(greeter["greeting"], json!("hola"));
 
-    // 6. Hot config update restarts the fiber; service value refreshes.
     handle
         .update(json!({ "greeting": "bonjour", "log": log_path.to_str().unwrap() }))
         .expect("update");
@@ -94,8 +81,6 @@ fn full_binary_component_lifecycle() {
     );
     assert!(handle.is_active());
 
-    // 7. Dispose: component disposers run (file proof), service withdrawn,
-    //    the native consumer deactivates.
     handle.dispose();
     assert_eq!(
         consumer.state(),
@@ -115,7 +100,6 @@ fn full_binary_component_lifecycle() {
         "update restart + dispose: {log}"
     );
 
-    // 8. Reinstall from the same mapped library.
     let handle2 = component
         .install(
             &ctx,
@@ -135,14 +119,12 @@ fn pending_until_host_provides_the_dependency() {
     let ctx = Context::new();
     ctx.set_logger(Arc::new(yacordis::DiscardLogger));
 
-    // No `database` anywhere: the component must wait, body unexecuted.
     let handle = component
         .install(&ctx, json!({ "greeting": "hi" }))
         .expect("install");
     assert_eq!(handle.state(), FiberState::Pending);
     assert!(!ctx.has("greeter"), "body did not run");
 
-    // Dependency appears: the binary component activates reactively.
     ctx.provide("database", Arc::new(json!({ "uri": "pg://late" })))
         .expect("provide");
     assert_eq!(handle.state(), FiberState::Active);
@@ -150,10 +132,6 @@ fn pending_until_host_provides_the_dependency() {
     handle.dispose();
 }
 
-/// The FFI `run_blocking` bridge: a binary component runs work on a
-/// framework thread, polls the cancellation token, and its completion
-/// callback (a framework-initiated call on the worker thread) appends
-/// to the log. Unload drains the in-flight unit before rollback.
 #[test]
 fn binary_component_blocking_work() {
     let component =
@@ -165,7 +143,6 @@ fn binary_component_blocking_work() {
 
     let target = build_options().target_dir.unwrap();
 
-    // Completion path: the work runs to its delay and delivers Done.
     let log_path = target.join("demo-work.log");
     let _ = std::fs::remove_file(&log_path);
     let handle = component
@@ -189,8 +166,6 @@ fn binary_component_blocking_work() {
     }
     handle.dispose();
 
-    // Drain path: a long-polling work must be cancelled and joined at
-    // dispose, not waited out.
     let cancel_log = target.join("demo-work-cancel.log");
     let _ = std::fs::remove_file(&cancel_log);
     let handle2 = component

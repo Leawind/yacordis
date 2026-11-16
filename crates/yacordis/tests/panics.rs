@@ -1,12 +1,10 @@
-//! Panic containment at every user-code boundary. A component body panic
-//! was already covered in `lifecycle.rs`; these tests lock the remaining
-//! catch_unwind sites: event listeners, effect disposers, waterfall
-//! middlewares and effect setups.
+//! Panic containment at the remaining catch_unwind sites beyond the
+//! component body (covered in `lifecycle.rs`).
 
 use std::sync::{Arc, Mutex};
 
-use yacordis::prelude::*;
 use serde_json::{Value, json};
+use yacordis::prelude::*;
 
 type Log = Arc<Mutex<Vec<String>>>;
 
@@ -18,9 +16,7 @@ fn logged(log: &Log) -> Vec<String> {
     log.lock().unwrap().clone()
 }
 
-/// Box coercion needs the target type known (see AGENTS.md pitfalls):
-/// build the panicking disposer inside a function with a declared
-/// return type.
+/// Box coercion needs the target type known (see AGENTS.md pitfalls).
 fn boom_disposer(log: Log) -> Disposer {
     Box::new(move || {
         push(&log, "boom:dispose");
@@ -43,12 +39,10 @@ fn panicking_listener_does_not_poison_dispatch() {
     })
     .expect("on");
 
-    // emit returns normally; the later listener still ran.
     ctx.emit("evt", &json!(null));
     assert!(second_ran.load(std::sync::atomic::Ordering::SeqCst));
 
-    // Same containment under bail: the panic counts as "no result" and
-    // dispatch continues to the next listener.
+    // Under bail a panic counts as "no result"; dispatch continues.
     let result = Arc::new(std::sync::atomic::AtomicBool::new(false));
     ctx.on("bail-evt", |_, _| panic!("bail boom")).expect("on");
     ctx.on("bail-evt", {
@@ -82,7 +76,6 @@ fn panicking_disposer_does_not_block_remaining_disposers() {
                             ))
                         }
                     })?;
-                    // Registered last → disposed first: panics.
                     ctx.effect("eff/boom", {
                         let log = log.clone();
                         move |_| Ok(Some(boom_disposer(log.clone())))
@@ -115,8 +108,6 @@ fn panicking_middleware_aborts_update_with_error() {
         .expect("install");
     assert!(handle.is_active());
 
-    // The panic must surface as an error from update(), never as a value
-    // or a host crash, and leave config/state untouched.
     let err = handle
         .update(json!({ "v": 2 }))
         .expect_err("update must fail");
@@ -149,9 +140,8 @@ fn panicking_effect_setup_fails_the_fiber_and_reverts_collected_effects() {
                     }
                 })?;
                 if !recover.load(std::sync::atomic::Ordering::SeqCst) {
-                    // A setup panic propagates out of ctx.effect (the
-                    // collected disposers are reverted on the way), then
-                    // the body panic fails the fiber.
+                    // The setup panic reverts already-collected disposers
+                    // on the way out, then fails the fiber.
                     ctx.effect(
                         "eff/boom",
                         |_| -> Result<EffectOutcome, Box<dyn std::error::Error + Send + Sync>> {
@@ -169,11 +159,10 @@ fn panicking_effect_setup_fails_the_fiber_and_reverts_collected_effects() {
     assert_eq!(handle.state(), FiberState::Failed);
     let error = handle.error().expect("failure recorded");
     assert!(error.contains("component panicked: setup boom"), "{error}");
-    // Effects recorded before the panicking setup were reverted.
     assert_eq!(logged(&log), ["before:dispose"]);
 
-    // update() recovers: the body re-runs without the panic branch, and
-    // the fresh `eff/before` effect stays live (no second dispose).
+    // update() re-runs the body without the panic branch; the fresh
+    // `eff/before` stays live (no second dispose).
     recover.store(true, std::sync::atomic::Ordering::SeqCst);
     handle.update(json!(null)).expect("update recovers");
     assert_eq!(handle.state(), FiberState::Active);

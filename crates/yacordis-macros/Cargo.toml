@@ -2,8 +2,8 @@
 name = "yacordis-macros"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
 license = "MIT"
+rust-version = "1.85"
 description = "Attribute macros for declaring yacordis components"
 
 [lib]
@@ -15,5 +15,5 @@ quote = "1"
 syn = { version = "2", features = ["full"] }
 
 [dev-dependencies]
-yacordis = { workspace = true }
 serde_json = { workspace = true }
+yacordis = { workspace = true }

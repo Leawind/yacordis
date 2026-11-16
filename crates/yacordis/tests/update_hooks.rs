@@ -1,13 +1,11 @@
 //! internal/update interception dies with the fiber that registered it
 //! (cordis TS #56: update hooks leaked past fiber disposal and kept
-//! rewriting later updates). Positive control first: while the fiber is
-//! alive its middleware is applied; after disposal, later updates pass
-//! through untouched.
+//! rewriting later updates).
 
 use std::sync::{Arc, Mutex};
 
-use yacordis::prelude::*;
 use serde_json::{Value, json};
+use yacordis::prelude::*;
 
 #[test]
 fn update_middleware_dies_with_its_fiber() {
@@ -37,7 +35,6 @@ fn update_middleware_dies_with_its_fiber() {
         .component(|_: &Context, _: &Value| Ok(()), json!(null))
         .expect("install target");
 
-    // Positive control: a live interceptor rewrites the update config.
     target
         .update(json!({ "n": 1 }))
         .expect("update while alive");
@@ -50,8 +47,6 @@ fn update_middleware_dies_with_its_fiber() {
 
     interceptor.dispose();
 
-    // After disposal the middleware is gone: config passes through and
-    // the dead fiber's closure is never invoked again.
     target
         .update(json!({ "n": 2 }))
         .expect("update after dispose");
@@ -63,11 +58,8 @@ fn update_middleware_dies_with_its_fiber() {
     assert_eq!(target.config().unwrap(), json!({ "n": 2 }));
 }
 
-/// Prepend ordering (cordis TS #296, `DisposableList.unshift`): a
-/// prepended update middleware runs before previously registered ones,
-/// most recently prepended first; appended entries keep registration
-/// order. Removing one prepended entry leaves the rest of the chain
-/// intact.
+/// Prepend ordering (cordis TS #296, `DisposableList.unshift`): most
+/// recently prepended runs first.
 #[test]
 fn prepended_update_middleware_runs_first() {
     let ctx = Context::new();

@@ -1,16 +1,16 @@
 [package]
 name = "demo-component"
-description = "A cdylib component used by yacordis-loader's integration test"
 version = "0.1.0"
 edition = "2021"
 publish = false
+description = "A cdylib component used by yacordis-loader's integration test"
 
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
-yacordis-component-api = { path = "../../../../yacordis-component-api" }
 serde_json = "1"
+yacordis-component-api = { path = "../../../../yacordis-component-api" }
 
 # Deliberately its own workspace: components are built outside the host's
 # workspace, with their own dependency resolution.

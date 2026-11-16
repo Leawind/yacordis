@@ -1,22 +1,16 @@
 //! Registrations attempted while a fiber is in its unloading window
-//! (cordis TS issues #96/#91: effects and listeners registered during
-//! unload must not leak into the next activation).
-//!
-//! The window is reached deterministically: a disposer runs while the
-//! fiber is marked `unloading`, so registration attempts from inside it
-//! must be rejected as `InactiveContext` — and rejected cleanly enough
-//! that the fiber can reactivate afterwards with no leftover state.
+//! (cordis TS issues #96/#91) must be rejected as `InactiveContext`
+//! cleanly enough that the fiber can reactivate with no leftover state.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use yacordis::prelude::*;
 use serde_json::{Value, json};
+use yacordis::prelude::*;
 
 #[test]
 fn registration_during_unload_is_rejected_without_leaks() {
     let ctx = Context::new();
-    // (attempted action, rejected-as-InactiveContext)
     let attempts: Arc<Mutex<Vec<(&'static str, bool)>>> = Arc::default();
     let fired: Arc<Mutex<Vec<String>>> = Arc::default();
 
@@ -27,7 +21,6 @@ fn registration_during_unload_is_rejected_without_leaks() {
         }
     };
 
-    // The provider goes in first so the consumer activates on install.
     let provider = ctx
         .component(mk_provider(1), json!(null))
         .expect("install provider");
@@ -36,8 +29,7 @@ fn registration_during_unload_is_rejected_without_leaks() {
         let attempts = attempts.clone();
         let fired = fired.clone();
         ctx.inject(Inject::required(&["db"]), move |ctx: &Context| {
-            // A regular listener: re-registered on every activation,
-            // disposed on every unload.
+            // Re-registered on every activation — the leak probe below.
             ctx.on("evt", {
                 let fired = fired.clone();
                 move |_, _| {
@@ -46,8 +38,7 @@ fn registration_during_unload_is_rejected_without_leaks() {
                 }
             })?;
 
-            // The probe: its disposer runs inside the unloading window
-            // and attempts one of every registration.
+            // The probe: its disposer runs inside the unloading window.
             ctx.effect("probe", {
                 let attempts = attempts.clone();
                 let ctx = ctx.clone();
@@ -97,9 +88,8 @@ fn registration_during_unload_is_rejected_without_leaks() {
     assert!(consumer.is_active());
     assert_eq!(consumer.state(), FiberState::Active);
 
-    // Disposing the provider keep-alive-unloads the consumer: the probe
-    // disposer runs while the consumer is marked unloading (but not yet
-    // disposed).
+    // Keep-alive unload: the probe disposer runs while the consumer is
+    // marked unloading but not yet disposed.
     assert!(provider.dispose());
     assert_eq!(consumer.state(), FiberState::Pending);
 
@@ -112,12 +102,9 @@ fn registration_during_unload_is_rejected_without_leaks() {
         );
     }
 
-    // Nothing leaked from the rejected attempts.
     assert!(!ctx.has("late"), "rejected provide must not be registered");
 
-    // The fiber survives as Pending and works normally after
-    // reactivation: exactly one `evt` listener (from the fresh body),
-    // not two, and no `late` listener at all.
+    // Exactly one `evt` listener (from the fresh body), no `late` listener.
     let provider = ctx
         .component(mk_provider(2), json!(null))
         .expect("reinstall provider");

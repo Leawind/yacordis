@@ -1,18 +1,13 @@
-//! Deep dependency-chain unwinding (the depth ≥ 2 counterpart of
-//! cordis TS issue #110: "provider unloads before its consumers").
-//!
-//! When the root provider of an A ← B ← C chain is disposed, every
-//! consumer must fully halt *inside* the provider's withdrawal, and no
-//! consumer may observe its dependency after the providing fiber released
-//! it. Reinstalling the root revives the whole chain.
+//! Depth ≥ 2 counterpart of cordis TS issue #110 ("provider unloads
+//! before its consumers").
 //!
 //! House rule: never assert inside disposers/listeners (their panics are
 //! swallowed by design) — record observations, assert on the test thread.
 
 use std::sync::{Arc, Mutex};
 
-use yacordis::prelude::*;
 use serde_json::{Value, json};
+use yacordis::prelude::*;
 
 type Log = Arc<Mutex<Vec<String>>>;
 
@@ -32,12 +27,10 @@ fn count(log: &Log, msg: &str) -> usize {
 fn multi_level_dependency_chain_unwinds_consumers_first() {
     let ctx = Context::new();
     let log: Log = Arc::default();
-    // Observations recorded inside disposers, in encounter order.
     let saw: Arc<Mutex<Vec<String>>> = Arc::default();
 
-    // A: provides "a", then registers a plain effect. Registration order
-    // [provide, effect] means teardown runs the effect disposer first and
-    // the withdrawal (which drives the whole downstream cascade) last.
+    // Registration order [provide, effect] makes teardown run the effect
+    // disposer first and the withdrawal (which cascades downstream) last.
     let mk_provider_a = |log: Log, tag: &'static str| {
         move |ctx: &Context, _: &Value| -> ComponentResult {
             ctx.provide("a", Arc::new(json!({ "from": tag })))?;
@@ -55,7 +48,6 @@ fn multi_level_dependency_chain_unwinds_consumers_first() {
         }
     };
 
-    // C: injects "b", logs its own setup/dispose.
     let consumer = {
         let log = log.clone();
         ctx.inject(Inject::required(&["b"]), move |ctx: &Context| {
@@ -72,12 +64,9 @@ fn multi_level_dependency_chain_unwinds_consumers_first() {
     }
     .expect("install C");
 
-    // B: injects "a", provides "b". Registration order
-    // [b/after-cascade, provide, b/eff] gives teardown order
-    // [b/eff, withdraw-b (cascades into C), b/after-cascade] — so the
-    // recorded observations cover both ends of the invariant:
-    // - inside b/eff: the upstream service "a" is already gone;
-    // - inside b/after-cascade: the grandchild C is already fully halted.
+    // Registration order [b/after-cascade, provide, b/eff] means the
+    // recorded observations cover both ends of the invariant: inside
+    // b/eff "a" is already gone; inside b/after-cascade C is fully halted.
     let middle = {
         let log = log.clone();
         let saw = saw.clone();
@@ -132,15 +121,12 @@ fn multi_level_dependency_chain_unwinds_consumers_first() {
     assert!(consumer.is_active());
     assert_eq!(logged(&log), ["a1:setup", "b:setup", "c:setup"]);
 
-    // Dispose the root: the cascade must nest consumer teardowns inside
-    // the provider's withdrawal.
     assert!(root_provider.dispose());
     assert_eq!(logged(&log)[3..], ["a1:dispose", "b:dispose", "c:dispose"]);
     assert_eq!(root_provider.state(), FiberState::Disposed);
     assert_eq!(middle.state(), FiberState::Pending);
     assert_eq!(consumer.state(), FiberState::Pending);
 
-    // Observations from inside the teardown, in encounter order.
     assert_eq!(
         *saw.lock().unwrap(),
         [
@@ -151,7 +137,6 @@ fn multi_level_dependency_chain_unwinds_consumers_first() {
         *saw.lock().unwrap()
     );
 
-    // Reinstalling the root revives the entire chain (bodies re-run).
     let root_provider = ctx
         .component(mk_provider_a(log.clone(), "a2"), json!(null))
         .expect("reinstall A");

@@ -1,13 +1,11 @@
 //! Service value schemas (the `check` predicate, Rust-shaped): a
-//! registered schema gates every provide/set of that JSON service in
-//! the isolation group — violations fail the call and leave the previous
-//! value untouched. The registration is an effect: unloading the
-//! registering fiber lifts the gate. Typed services bypass.
+//! registered schema gates every provide/set of that JSON service;
+//! registration is an effect that dies with its fiber.
 
 use std::sync::{Arc, Mutex};
 
-use yacordis::prelude::*;
 use serde_json::{Value, json};
+use yacordis::prelude::*;
 
 fn counter_schema() -> Schema {
     Schema::object()
@@ -30,10 +28,8 @@ fn provide_schema_gates_provide_and_set() {
                     ctx.provide_schema("counter", counter_schema())
                         .expect("register schema");
 
-                    // Valid provide passes and is visible.
                     ctx.provide("counter", Arc::new(json!({ "kind": "tick", "n": 0 })))?;
 
-                    // Invalid set: rejected, previous value untouched.
                     let error = ctx
                         .set("counter", Arc::new(json!({ "kind": "tock", "n": -1 })))
                         .expect_err("negative n violates the schema");
@@ -45,7 +41,6 @@ fn provide_schema_gates_provide_and_set() {
                             .unwrap()
                     ));
 
-                    // A violating fresh provide fails the call.
                     ctx.provide_schema("fresh", counter_schema())
                         .expect("register fresh schema");
                     let error = ctx
@@ -78,7 +73,6 @@ fn schema_registration_dies_with_its_fiber() {
     let ctx = Context::new();
     let observed: Arc<Mutex<Vec<String>>> = Arc::default();
 
-    // A scoped fiber raises the gate and probes it from inside.
     let scope = ctx
         .component(
             {
@@ -87,7 +81,6 @@ fn schema_registration_dies_with_its_fiber() {
                     let observed = observed.clone();
                     ctx.provide_schema("temporary", counter_schema())
                         .expect("register schema");
-                    // Violating provide while the gate is up: rejected.
                     let error = ctx
                         .provide("temporary", Arc::new(json!("not an object")))
                         .expect_err("gate active");
@@ -108,7 +101,6 @@ fn schema_registration_dies_with_its_fiber() {
         "the gate rejected while its fiber was alive"
     );
 
-    // After disposal the gate is gone: a violating value provides fine.
     let after = ctx
         .component(
             |ctx: &Context, _: &Value| -> ComponentResult {

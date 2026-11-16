@@ -153,7 +153,6 @@ mod work;
 
 pub use component::{Component, Inject};
 pub use context::{Context, FiberHandle};
-pub use yacordis_macros::component;
 pub use effect::{Disposer, EffectHandle, EffectOutcome};
 pub use error::{ComponentError, ComponentResult, CordisError};
 pub use events::Event;
@@ -162,6 +161,7 @@ pub use logger::{DiscardLogger, LogLevel, Logger, StderrLogger};
 pub use schema::{Diagnostic, Schema, SchemaBuilder};
 pub use serde_json;
 pub use work::{CancellationToken, WorkHandle, WorkOutcome};
+pub use yacordis_macros::component;
 
 /// Internal diagnostics (used by the stress tests).
 #[doc(hidden)]

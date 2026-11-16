@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use yacordis_component_api::{Callback, RawBuffer, RawCallbacks};
 use serde_json::Value;
+use yacordis_component_api::{Callback, RawBuffer, RawCallbacks};
 
 use crate::handles::{HandleTable, HostObject};
 use crate::vtable::{HOST_VTABLE, handles};
