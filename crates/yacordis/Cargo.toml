@@ -9,4 +9,4 @@ description = "Rust implementation of the Cordis spatiotemporal composability fr
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
-yacordis-macros = { path = "../yacordis-macros" }
+yacordis-macros = { path = "../yacordis-macros", version = "0.1.0" }
