@@ -45,25 +45,36 @@ Hard requirement: components are distributed as prebuilt cdylibs, installed by u
 - **Buffer ownership (the single rule)**: the callee frees the input buffer; the caller frees the output buffer after reading. All buffers go through the process-shared `malloc`/`free`. **CRT caveat**: components must link the CRT dynamically — a Windows static CRT (/MT) build ships its own heap, and freeing across the boundary violates the shared allocator assumption (UB).
 - **Component exports** (`register_component!` macro, edition 2024 unsafe attribute syntax): `yacordis_abi_version()` (handshake), `yacordis_component_manifest()`, `yacordis_component_apply()`, `yacordis_component_free_buffer()`.
 - **Callback state machine**: one-shot callbacks return `CODE_REUSED` when invoked a second time; the state box is freed by `drop_fn`, decoupled from invocation.
-- **Unload strategy**: keep-mapped — state effects fully roll back, machine code pages stay resident until process exit.
+- **Unload strategy**: verified unload — `ComponentLibrary::unload` unmaps the binary once the host has proven a quiet state (no in-flight component code, every fiber disposed, no component instance held outside its own adapter), and a failed proof is a refusal naming the violation point that degrades to keep-mapped. Every entry into component code passes through the library lease's gate, which is serialized against unmapping — that gate, not the mapping, is what makes unmap safe.
 - **Component author's view**: depend on `yacordis-component-api`, write an ordinary `impl Component` + `register_component!(...)`, crate-type = `["cdylib"]`; the API shape matches the native `yacordis::Component`. See `crates/yacordis-loader/tests/` for fixtures.
 
 What core provides for this: a uniform `Arc<dyn Component>` shape (`component_dyn`), a Value-first dynamic carrier, and lock-free reentrancy (installing/providing/on inside FFI callbacks is safe). **Boundary limits (intentional)**: service values across the ABI are `serde_json::Value` (typed downcast is native-only).
 
 ### 3.1 Unloading Limitation Contract (Component Spec Invariants)
 
-"Clean unloading" has three layers: ① **semantically clean** (everything registered through the framework is provably reclaimed) — guaranteed by the effect collection structure; ② **code clean** (code pages valid throughout) — carried by the keep-mapped strategy; ③ **process clean** (no accumulated residue in long-running processes) — relies on the component author honoring these three invariants:
+"Clean unloading" has three layers: ① **semantically clean** (everything registered through the framework is provably reclaimed) — guaranteed by the effect collection structure; ② **code clean** (code pages valid throughout) — carried by verified unload: the mapping is revoked only after the host proves no component code can ever run again (process quiescence, the in-flight gate at zero, every adapter of the library released); a failed proof keeps the library mapped; ③ **process clean** (no accumulated residue in long-running processes) — relies on the component author honoring these three invariants:
 
 - **I1 (single scheduling domain)**: component code only executes within framework-initiated calls (vtable calls, or work units registered as effects). Corollary: before unload the framework can drain all in-flight work (curtain call → drain → rollback), so no concurrent component code exists during rollback. Threads and async may exist, but only as host plumbing.
 - **I2 (resource ownership)**: every resource a component acquires is either registered through `ctx` (framework-held, recorded in the handle table) or never escapes the component body scope. Corollary: at dispose time an empty handle table ⇒ semantically clean. The host half is mechanically checkable (dispose audit); the component half is sealed by capability-style APIs + lints.
 - **I3 (no cross-install state)**: a component must not hold mutable state surviving across installs; behavior is a pure function of (config, service view, received events). Corollary: reload = a fresh instance, giving correct hot-reload semantics.
 
-Enforcement: I1 by ABI structure (entry only via vtable) + lints; I2 host half by runtime assertions in the dispose audit, component half by lint profile (the `build_and_load` path holds the sources so it can be mechanically enforced; prebuilt binary distribution degrades to trusting the publisher); I3 by lints; keep-mapped as the backstop so violations degrade at worst to memory leaks. Subprocesses are the compliant escape hatch for CPU parallelism and fault isolation — process death is the only perfect unloading.
+Enforcement: I1 by ABI structure (entry only via vtable) + lints; I2 host half by runtime assertions in the dispose audit, component half by lint profile (the `build_and_load` path holds the sources so it can be mechanically enforced; prebuilt binary distribution degrades to trusting the publisher); I3 by lints. What the host can see, unload refuses: in-flight component code and undisposed fibers turn into refusals naming the violation point, and a refused unload keeps the library mapped — keep-mapped is the backstop so anything that refuses to prove itself quiet degrades at worst to memory leaks. An invisible I1 violation (raw threads running component code that never passes back through the framework) cannot be detected by the host, and unloading such a binary is undefined behavior — which is why unload requires trust, not just the runtime audit. Subprocesses are the compliant escape hatch for CPU parallelism and fault isolation — process death is the only perfect unloading.
+
+### 3.2 The Invariants in Code Terms (For Plugin Authors)
+
+What I1–I3 mean at the keyboard — the bundled lints catch the mechanical parts at build time; the runtime refusal audit is the remainder:
+
+- **I1**: run code only when the framework calls you — the component body, effect setups, listeners, work callbacks, disposers. Do not `std::thread::spawn`, do not run your own scheduler: a thread that outlives the framework's calls is in flight forever, and unloading the binary under it is undefined behavior. Framework-mediated work (`run_blocking`/`spawn_future`) is the supported form — dispose drains it, so it never blocks an unload.
+- **I2**: acquire resources through the `Context` and free buffers through the buffer protocol; nothing escapes the component body scope. The host reclaims every context handle bound to a dying fiber; your half is what makes the effect rollback actually clean.
+- **I3**: no mutable state that survives across installs — behavior is a pure function of (config, service view, received events). A reloaded component is a fresh instance, which is what makes the unload → rebuild → reload loop (on Windows, the artifact file becomes writable again) produce correct semantics.
+
+With all three honored, the lifecycle `install → use → dispose → unload` returns the process to the state before the load: the binary is unmapped and its file writable again. The unload tests (`crates/yacordis-loader/tests/unload.rs`) pin both this happy path and the refusal paths.
 
 ## 4. Accepted Debt
 
 Known limitations accepted in the current design:
 
-1. Under concurrent interleaving, when `install`/`dispose` returns, a cascade triggered by another thread may not have landed yet — a hard assertion needs `wait_for`/`quiesce`. Eliminating it entirely means rearchitecting lifecycles as a single-threaded actor executor, an async-milestone architecture decision.
-2. Typed events re-deserialize per listener (small scale).
-3. `Fiber.parent`/`Fiber.isolate` fields are currently write-only (reserved for scope introspection).
+1. Typed events re-deserialize per listener (small scale).
+2. `Fiber.parent`/`Fiber.isolate` fields are currently write-only (reserved for scope introspection).
+
+Resolved: the former concurrency-interleaving debt (a cascade triggered by another thread may land after `install`/`dispose` returned) is closed for unload — the one operation that could not tolerate it. Unload waits for process quiescence (`yacordis::quiesce`) and then verifies its preconditions against the live gate instead of trusting returned flags; callers that need a settled view have `quiesce`/`wait_for`. Lifecycle calls themselves remain eventually-consistent under interleaving, by design.

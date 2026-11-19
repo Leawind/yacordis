@@ -9,6 +9,7 @@ use serde_json::Value;
 use yacordis_component_api::{ABI_VERSION, Callback, RawBuffer};
 
 use crate::adapter::{FfiComponent, SendCallback};
+use crate::lease::{LibraryLease, UnloadError};
 
 /// Why a component could not be installed.
 #[derive(Debug)]
@@ -72,20 +73,21 @@ pub struct ComponentManifest {
 
 /// One dynamically loaded component binary.
 ///
-/// The library stays mapped for the life of the process (see
-/// `docs/design.md` §4 for the unload policy); every install of this
-/// [`ComponentLibrary`] shares the same mapped code and can be disposed and
-/// reinstalled independently.
+/// The library stays mapped while it can still run component code: every
+/// install of this [`ComponentLibrary`] shares the same mapped binary and
+/// can be disposed and reinstalled independently. Once every fiber is
+/// disposed, [`ComponentLibrary::unload`] unmaps it for real — or refuses
+/// and degrades to keep-mapped when the quiet state cannot be proven (see
+/// `docs/design.md` §3.1 for the contract).
 pub struct ComponentLibrary {
-    #[allow(dead_code)]
-    library: &'static Library,
+    lease: Arc<LibraryLease>,
     /// Parsed from the component's exported manifest.
     pub manifest: ComponentManifest,
     adapter: Arc<FfiComponent>,
 }
 
 // SAFETY: the component ABI contract requires closures and state to be
-// usable from any thread; the Library handle is process-global.
+// usable from any thread; the lease serializes library access.
 unsafe impl Send for ComponentLibrary {}
 unsafe impl Sync for ComponentLibrary {}
 
@@ -112,10 +114,8 @@ impl ComponentLibrary {
             return Err(LoadError::AbiMismatch { found });
         }
 
-        // Leak the Library: the unload policy is keep-mapped, so symbols
-        // (and the apply callback) stay valid for the process lifetime.
-        let library: &'static Library = Box::leak(Box::new(library));
-
+        // Every export call below runs while the library is still owned
+        // here; a failing step drops it and unmaps the binary again.
         let manifest = unsafe {
             library
                 .get::<extern "C" fn() -> RawBuffer>(b"yacordis_component_manifest\0")
@@ -138,43 +138,119 @@ impl ComponentLibrary {
                 .map_err(|e| LoadError::Symbol("yacordis_component_apply", e))?
         }();
 
-        let inject = {
-            let mut inject = yacordis::Inject::none();
-            for name in &parsed.required {
-                inject = inject.req(name.clone());
-            }
-            for name in &parsed.optional {
-                inject = inject.opt(name.clone());
-            }
-            inject
-        };
-        let adapter = Arc::new(FfiComponent::new(
+        // The lease owns the mapping from here on: every component callback
+        // in the host is gated through it, and unload goes through it.
+        let lease = LibraryLease::new(library, path.to_path_buf());
+        let adapter = FfiComponent::create(
             parsed.name.clone(),
-            inject,
-            SendCallback::new(apply),
-        ));
+            inject_of(&parsed),
+            SendCallback::rooted(apply, lease.clone()),
+            lease.clone(),
+        );
 
         Ok(Self {
-            library,
+            lease,
             manifest: parsed,
             adapter,
         })
     }
 
     /// The erased component: pass to `ctx.component_dyn` or install directly.
+    ///
+    /// After a successful [`ComponentLibrary::unload`] the returned adapter
+    /// is inert: installing it yields a `Failed` fiber with a clear error
+    /// instead of a jump into unmapped code.
     #[must_use]
     pub fn component(&self) -> Arc<dyn yacordis::Component> {
         self.adapter.clone()
     }
 
     /// Install into a context (the component's `inject` gates activation).
+    ///
+    /// The fiber is tracked for unload evidence; disposing it (and every
+    /// other fiber of this library) is what makes [`ComponentLibrary::unload`]
+    /// legal.
     pub fn install(
         &self,
         ctx: &yacordis::Context,
         config: impl Into<serde_json::Value>,
     ) -> Result<yacordis::FiberHandle, yacordis::CordisError> {
-        ctx.component_dyn(self.component(), config)
+        if self.lease.is_closed() {
+            return Err(yacordis::CordisError::InactiveContext {
+                action: "install a component from an unloaded library",
+                fiber: self.manifest.name.clone(),
+            });
+        }
+        let handle = ctx.component_dyn(self.component(), config)?;
+        self.lease.register_fiber(
+            handle.clone(),
+            handle.name().or_else(|| self.manifest.name.clone()),
+        );
+        Ok(handle)
     }
+
+    /// Unmap the component binary from this process.
+    ///
+    /// Unloading is only allowed on a proven-quiet state; anything less is
+    /// refused with the violation named, and the library stays mapped (the
+    /// keep-mapped backstop). The evidence, checked atomically against new
+    /// component-code entries:
+    ///
+    /// 1. no component code in flight anywhere (in-flight framework calls
+    ///    count too — dispose drains them; a call that escaped the
+    ///    framework is a §3.1 I1 violation);
+    /// 2. no fiber installed from this library is left undisposed;
+    /// 3. no component instance is held outside the library's own adapter.
+    ///
+    /// Before the checks the host waits for every lifecycle cascade in the
+    /// process to land ([`yacordis::quiesce`]), so concurrent interleaving
+    /// cannot leave the evidence stale — skipped when the unload itself
+    /// runs inside a lifecycle op (a disposer uninstalling its own library
+    /// mid-cascade), where the checks still guard correctness.
+    ///
+    /// On success the binary is unmapped: on Windows the artifact file
+    /// becomes writable again, so the dev loop can rebuild and reload in
+    /// place. The call is idempotent; unloading twice returns `Ok`.
+    ///
+    /// # Not a sandbox
+    /// A component that invisibly violates I1 (raw threads running its own
+    /// code without framework mediation) cannot be detected by the host;
+    /// unloading such a binary is undefined behavior. Unload only
+    /// lint-clean components you trust — see `docs/design.md` §3.1.
+    pub fn unload(&self) -> Result<(), UnloadError> {
+        if self.lease.is_closed() {
+            return Ok(());
+        }
+        // Refuse fast while component code is in flight, before any wait.
+        self.lease.check_in_flight()?;
+        if !yacordis::executing_lifecycle_op() {
+            yacordis::quiesce();
+        }
+        self.lease.close(&self.adapter)
+    }
+
+    /// Whether the library is unloaded (or sealed after a failed unmap).
+    #[must_use]
+    pub fn is_unloaded(&self) -> bool {
+        self.lease.is_closed()
+    }
+
+    /// The file this library was loaded from (for diagnostics).
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        self.lease.path()
+    }
+}
+
+fn inject_of(parsed: &ComponentManifest) -> yacordis::Inject {
+    let mut inject = yacordis::Inject::none();
+    for name in &parsed.required {
+        inject = inject.req(name.clone());
+    }
+    for name in &parsed.optional {
+        inject = inject.opt(name.clone());
+    }
+    inject
 }
 
 fn string_list(value: &Value) -> Vec<String> {

@@ -33,21 +33,55 @@
 //! restarting — is [`Loader::build_and_load`], which shells out to
 //! `cargo` and loads the fresh cdylib.
 //!
-//! # Trust model
+//! # Unloading
 //!
-//! Loading a cdylib executes native code in-process: the same trust
-//! level as `require()` in the TypeScript original, and deliberately
-//! **not** a sandbox. For isolation, prefer a process- or WASM-based
-//! design; this crate optimizes for full-fidelity native components.
+//! Components unload for real. [`ComponentLibrary::unload`] unmaps the
+//! binary once the host has proven a quiet state — every fiber disposed,
+//! no component code in flight — and on Windows that releases the file
+//! lock, so the artifact can be rebuilt and reloaded in place. When the
+//! proof fails, the unload is refused with the violation named (an
+//! [`UnloadError`]) and the library stays mapped: a contract violation
+//! degrades at worst to a memory leak, never to a crash.
+//!
+//! The proof is the component author's responsibility to make possible.
+//! The invariants of `docs/design.md` §3.1, in code terms:
+//!
+//! - **I1 (single scheduling domain)** — only run code when the framework
+//!   calls you (`apply`, effect setups, listeners, work callbacks,
+//!   disposers). Never `std::thread::spawn` or run a scheduler of your
+//!   own: a thread that outlives the framework's calls is in flight
+//!   forever, unload either refuses or — if the thread never calls back
+//!   into the framework, where the host could see it — cannot prove
+//!   anything and unmapping becomes undefined behavior. Framework work
+//!   (`ctx.run_blocking`, `ctx.spawn_future`) is drained by dispose, so it
+//!   never blocks an unload.
+//! - **I2 (resource ownership)** — acquire everything through the
+//!   `Context` (services, effects, listeners, child components) and free
+//!   what you allocate through the buffer protocol; nothing escapes the
+//!   component body scope. On dispose the host audits its own half (all
+//!   context handles reclaimed); your half is what makes the effect
+//!   rollback actually clean.
+//! - **I3 (no cross-install state)** — no mutable state that survives
+//!   across installs: behavior is a pure function of (config, service
+//!   view, received events). No interior-mutable `static`s carrying
+//!   behavior. A reloaded component is a fresh instance, which is what
+//!   makes unload → rebuild → reload in place produce correct semantics.
+//!
+//! Prebuilt distribution cannot re-run the source lints (`Loader::build`
+//! with `lint: true` enforces them at build time), so unloading a binary
+//! you did not build from linted sources is trusting its publisher — the
+//! runtime refusal above is the auditable remainder.
 
 #![deny(missing_docs)]
 
 mod adapter;
 mod handles;
+mod lease;
 mod loader;
 mod registry;
 mod vtable;
 
+pub use lease::UnloadError;
 pub use loader::{
     BuildOptions, ComponentLibrary, ComponentManifest, LoadError, Loader, lint_source,
 };

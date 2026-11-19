@@ -69,13 +69,13 @@ unsafe extern "C" fn v_log(level: i32, target: RawBuffer, message: RawBuffer) {
 
 unsafe extern "C" fn v_effect(ctx_handle: u64, label: RawBuffer, setup: Callback) -> u64 {
     let label = take_string(label);
-    let setup = SendCallback::new(setup);
+    let setup = SendCallback::capture(setup);
     let Some(ctx) = handles().get_context(ctx_handle) else {
         // Dropping `setup` releases the component-side state via Drop.
         return 0;
     };
     let result = ctx.effect(&label, move |_| {
-        let outcome = match setup.invoke(ctx_handle, &Value::Null) {
+        let outcome = match setup.invoke("effect setup", ctx_handle, &Value::Null) {
             Invocation::Disposers(disposers) => EffectOutcome::Many(disposers),
             Invocation::Failed(message) => return Err(message.into()),
             Invocation::Ok(_) => EffectOutcome::None,
@@ -98,7 +98,7 @@ unsafe extern "C" fn v_once(ctx_handle: u64, name: RawBuffer, listener: Callback
 
 fn on_impl(ctx_handle: u64, name: RawBuffer, listener: Callback, once: bool) -> u64 {
     let name = take_string(name);
-    let listener = SendCallback::new(listener);
+    let listener = SendCallback::capture(listener);
     let Some(ctx) = handles().get_context(ctx_handle) else {
         return 0;
     };
@@ -118,7 +118,7 @@ fn on_impl(ctx_handle: u64, name: RawBuffer, listener: Callback, once: bool) -> 
 }
 
 fn invoke_listener(listener: &SendCallback, ctx_handle: u64, args: &Value) -> Option<Value> {
-    match listener.invoke(ctx_handle, args) {
+    match listener.invoke("listener", ctx_handle, args) {
         Invocation::Ok(value) => value,
         Invocation::Disposers(_) => None,
         Invocation::Failed(message) => {
@@ -263,12 +263,25 @@ unsafe extern "C" fn v_component(
             inject = inject.opt(n);
         }
     }
-    let child = crate::adapter::FfiComponent::new(name, inject, SendCallback::new(apply));
+    // The child's apply callback points into the parent's library: the
+    // child adapter joins the same lease's unload evidence.
+    let Some(lease) = crate::adapter::current_lease() else {
+        return 0;
+    };
+    let child = crate::adapter::FfiComponent::create(
+        name.clone(),
+        inject,
+        SendCallback::capture(apply),
+        lease.clone(),
+    );
     let Some(ctx) = handles().get_context(ctx_handle) else {
         return 0;
     };
-    match ctx.component_dyn(Arc::new(child), config) {
-        Ok(handle) => handles().insert(HostObject::Fiber(handle)),
+    match ctx.component_dyn(child, config) {
+        Ok(handle) => {
+            lease.register_fiber(handle.clone(), name);
+            handles().insert(HostObject::Fiber(handle))
+        }
         Err(_) => 0,
     }
 }
@@ -326,8 +339,8 @@ unsafe extern "C" fn v_run_blocking(
     on_done: Callback,
 ) -> u64 {
     let label = take_string(label);
-    let work = SendCallback::new(work);
-    let on_done = SendCallback::new(on_done);
+    let work = SendCallback::capture(work);
+    let on_done = SendCallback::capture(on_done);
     let Some(ctx) = handles().get_context(ctx_handle) else {
         return 0;
     };
@@ -336,7 +349,7 @@ unsafe extern "C" fn v_run_blocking(
         move |token| {
             let token_id = register_token(token.clone());
             // The work callback's `ctx` argument is the token handle.
-            let invocation = work.invoke(token_id, &Value::Null);
+            let invocation = work.invoke("work", token_id, &Value::Null);
             take_token(token_id);
             match invocation {
                 Invocation::Ok(value) => Ok(value.unwrap_or(Value::Null)),
@@ -355,7 +368,7 @@ unsafe extern "C" fn v_run_blocking(
                     json!({ "tag": "panicked", "message": message })
                 }
             };
-            let _ = on_done.invoke(ctx_handle, &envelope);
+            let _ = on_done.invoke("work completion", ctx_handle, &envelope);
         },
     );
     match result {

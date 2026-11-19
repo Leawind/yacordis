@@ -3,11 +3,8 @@
 //! integration test drives through the C ABI.
 
 use std::io::Write;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use yacordis_component_api::prelude::*;
-
-static DISPOSES: AtomicUsize = AtomicUsize::new(0);
 
 struct DemoComponent;
 
@@ -23,6 +20,10 @@ impl Component for DemoComponent {
     fn apply(&self, ctx: &Context, config: &Value) -> ComponentResult {
         let greeting = config["greeting"].as_str().unwrap_or("hello").to_owned();
         let log_path = config["log"].as_str().unwrap_or("").to_owned();
+
+        if config["fail"].as_bool().unwrap_or(false) {
+            return Err(ComponentError::new("demo component asked to fail"));
+        }
 
         // A JSON service, visible to the host and to other components.
         ctx.provide("greeter", json!({ "greeting": greeting }))
@@ -43,7 +44,6 @@ impl Component for DemoComponent {
         ctx.effect("demo/log", move |_| {
             append(&log_for_effect, "setup\n");
             Ok(vec![Disposable::new(move || {
-                DISPOSES.fetch_add(1, Ordering::SeqCst);
                 append(&log_for_effect, "disposed\n");
             })])
         })
@@ -55,9 +55,14 @@ impl Component for DemoComponent {
         let work_delay = config["work_delay_ms"].as_u64().unwrap_or(0);
         if work_delay > 0 {
             let log_for_work = log_path.clone();
+            let log_for_started = log_for_work.clone();
             ctx.run_blocking(
                 "demo/work",
                 move |token| {
+                    // Marks that component code is in flight on the worker
+                    // thread: the unload tests poll for this line to know
+                    // the work trampoline has been entered.
+                    append(&log_for_started, "started\n");
                     let mut waited = 0u64;
                     while waited < work_delay {
                         if token.is_cancelled() {
@@ -77,6 +82,19 @@ impl Component for DemoComponent {
                     };
                     append(&log_for_work, &format!("{tag}\n"));
                 },
+            )
+            .map_err(ComponentError::new)?;
+        }
+
+        // Child component install: exercises the component-code install
+        // path (a nested adapter on the same lease, tracked for unload).
+        if config["child"].as_bool().unwrap_or(false) {
+            ctx.component(
+                |ctx: &Context, _: &Value| -> ComponentResult {
+                    ctx.provide("greeter/child", json!({ "from": "child" }))
+                        .map_err(ComponentError::new)
+                },
+                &json!(null),
             )
             .map_err(ComponentError::new)?;
         }

@@ -163,6 +163,43 @@ pub use serde_json;
 pub use work::{CancellationToken, WorkHandle, WorkOutcome};
 pub use yacordis_macros::component;
 
+/// Wait until every lifecycle operation in every runtime of this process
+/// has finished (the process-global counterpart of
+/// [`Context::quiesce`](crate::Context::quiesce)).
+///
+/// Lifecycle cascades run synchronously on the triggering thread when
+/// uncontended; under concurrent lifecycle activity some cascaded
+/// transitions may complete shortly after the triggering call returns.
+/// Operations that need a settled runtime and cannot trust a returned
+/// flag — unloading a component library, shutting down — wait here first
+/// and then verify their own preconditions.
+pub fn quiesce() {
+    let mut spins = 0u32;
+    while crate::fiber::pending_ops() > 0 {
+        std::thread::sleep(std::time::Duration::from_micros(50));
+        spins += 1;
+        if spins == 40 {
+            eprintln!(
+                "[yacordis quiesce] stuck: pending_ops={}",
+                crate::fiber::pending_ops()
+            );
+        }
+        if spins > 20_000_000 {
+            return;
+        }
+    }
+}
+
+/// Whether this thread is currently inside a lifecycle operation (an
+/// install cascade, reload, unload or dispose).
+///
+/// Waiting for quiescence from inside one would wait for the calling
+/// thread itself — callers skip the wait in that case; the outer op's
+/// completion is what makes the cascade observable.
+pub fn executing_lifecycle_op() -> bool {
+    crate::fiber::executing_op_on_this_thread()
+}
+
 /// Internal diagnostics (used by the stress tests).
 #[doc(hidden)]
 pub mod test_support {
@@ -183,8 +220,10 @@ pub mod prelude {
     pub use crate::effect::{Disposer, EffectHandle, EffectOutcome};
     pub use crate::error::{ComponentError, ComponentResult, CordisError};
     pub use crate::events::Event;
+    pub use crate::executing_lifecycle_op;
     pub use crate::fiber::FiberState;
     pub use crate::logger::{DiscardLogger, LogLevel, Logger, StderrLogger};
+    pub use crate::quiesce;
     pub use crate::schema::{Diagnostic, Schema, SchemaBuilder};
     pub use crate::serde_json;
     pub use crate::work::{CancellationToken, WorkHandle, WorkOutcome};
