@@ -3,6 +3,7 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 use yacordis::MemorySink;
 use yacordis::prelude::*;
+use yacordis::{LogRecord, LogSink, LoggerService};
 
 #[test]
 fn records_flow_to_sinks_with_component_scopes() {
@@ -179,4 +180,48 @@ fn nested_scoped_levels_restore_in_reverse_order() {
         None,
         "inner restore runs first, then the outer one"
     );
+}
+
+#[test]
+fn a_sink_may_reenter_the_service_without_deadlocking() {
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    struct SelfInstalling {
+        service: Mutex<Option<Arc<LoggerService>>>,
+        calls: AtomicUsize,
+    }
+
+    impl LogSink for SelfInstalling {
+        fn write(&self, _: &LogRecord) {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            // A sink that installs another sink re-enters the very lock the
+            // emission used to hold.
+            if let Some(service) = self.service.lock().unwrap().clone() {
+                let _late = service.add_sink(MemorySink::new());
+            }
+        }
+    }
+
+    let service = LoggerService::new();
+    let sink = Arc::new(SelfInstalling {
+        service: Mutex::new(None),
+        calls: AtomicUsize::new(0),
+    });
+    service.add_arc_sink(sink.clone());
+    *sink.service.lock().unwrap() = Some(service.clone());
+
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let emitter = service.clone();
+    std::thread::spawn(move || {
+        emitter.log(LogLevel::Info, "test", "hello");
+        let _ = done_tx.send(());
+    });
+    assert_eq!(
+        done_rx.recv_timeout(Duration::from_secs(5)),
+        Ok(()),
+        "emission deadlocked against a sink that re-entered it"
+    );
+    assert_eq!(sink.calls.load(Ordering::SeqCst), 1);
 }

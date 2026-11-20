@@ -23,7 +23,7 @@ pub(crate) fn component_key(component: &Arc<dyn Component>) -> ComponentKey {
 
 pub(crate) struct Runtime {
     pub key: ComponentKey,
-    #[allow(dead_code)] // introspection; fibers carry their own copy
+    /// Component name, reported by [`Registry::summaries`].
     pub name: String,
     pub fibers: Mutex<Vec<Arc<Fiber>>>,
 }
@@ -38,12 +38,7 @@ pub(crate) struct Registry {
 }
 
 impl Registry {
-    pub fn entry(
-        &mut self,
-        key: ComponentKey,
-        name: String,
-        _component: &Arc<dyn Component>,
-    ) -> Arc<Runtime> {
+    pub fn entry(&mut self, key: ComponentKey, name: String) -> Arc<Runtime> {
         self.map
             .entry(key)
             .or_insert_with(|| {
@@ -108,11 +103,6 @@ impl Registry {
         self.map
             .get(&key)
             .map(|runtime| runtime.fibers.lock().unwrap().clone())
-    }
-
-    #[allow(dead_code)] // used by tests
-    pub fn runtime_count(&self) -> usize {
-        self.map.len()
     }
 
     /// Introspection view for `Context::installed_components`.
@@ -180,11 +170,10 @@ pub(crate) fn move_fiber(
     fiber: &Arc<Fiber>,
     new_key: ComponentKey,
     new_name: String,
-    new_component: &Arc<dyn Component>,
 ) {
     let new_runtime = {
         let mut registry = core.registry.lock().unwrap();
-        registry.entry(new_key, new_name, new_component)
+        registry.entry(new_key, new_name)
     };
     if let Some(old) = fiber.runtime() {
         if old.key != new_runtime.key {

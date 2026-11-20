@@ -172,20 +172,16 @@ pub use yacordis_macros::component;
 /// Operations that need a settled runtime and cannot trust a returned
 /// flag — unloading a component library, shutting down — wait here first
 /// and then verify their own preconditions.
+///
+/// The wait is bounded (30 s): an op still pending after that is stuck in
+/// user code, and blocking forever would hide it.
 pub fn quiesce() {
-    let mut spins = 0u32;
-    while crate::fiber::pending_ops() > 0 {
-        std::thread::sleep(std::time::Duration::from_micros(50));
-        spins += 1;
-        if spins == 40 {
-            eprintln!(
-                "[yacordis quiesce] stuck: pending_ops={}",
-                crate::fiber::pending_ops()
-            );
-        }
-        if spins > 20_000_000 {
-            return;
-        }
+    if !crate::fiber::wait_until_quiescent(crate::fiber::QUIESCE_TIMEOUT) {
+        eprintln!(
+            "[yacordis quiesce] gave up after {:?} with pending_ops={}",
+            crate::fiber::QUIESCE_TIMEOUT,
+            crate::fiber::pending_ops()
+        );
     }
 }
 

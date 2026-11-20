@@ -285,7 +285,7 @@ impl Context {
         let key = component_key(&component);
         let runtime = {
             let mut registry = self.core.registry.lock().unwrap();
-            registry.entry(key, name.clone(), &component)
+            registry.entry(key, name.clone())
         };
 
         let fiber = Fiber::install(
@@ -360,7 +360,7 @@ impl Context {
         let mut handles = Vec::new();
         let mut first_error = None;
         for fiber in fibers {
-            crate::registry::move_fiber(&self.core, &fiber, new_key, new_name.clone(), &new);
+            crate::registry::move_fiber(&self.core, &fiber, new_key, new_name.clone());
             if let Err(err) = fiber.replace_component(&self.core, new.clone()) {
                 first_error.get_or_insert(err);
             }
@@ -621,11 +621,6 @@ impl Context {
         crate::diagnose::dependency_cycles(&self.core)
     }
 
-    #[allow(dead_code)] // exercised by tests and future modules
-    pub(crate) fn log_error(&self, target: &str, error: &(dyn std::error::Error + 'static)) {
-        self.core.logger.log_error(target, error);
-    }
-
     /// Block until every lifecycle operation in the runtime has finished
     /// (the synchronous counterpart of cordis v4's async `inertia`).
     ///
@@ -666,37 +661,37 @@ impl Core {
     /// Wait until every scheduled lifecycle op in the runtime has
     /// finished executing.
     pub(crate) fn quiesce(&self) {
-        let mut spins = 0u32;
-        while crate::fiber::pending_ops() > 0 {
-            std::thread::sleep(std::time::Duration::from_micros(50));
-            spins += 1;
-            if spins == 40 {
-                eprintln!(
-                    "[yacordis quiesce] stuck: pending_ops={} fibers={}",
-                    crate::fiber::pending_ops(),
-                    {
-                        let registry = self.registry.lock().unwrap();
-                        registry
-                            .all_fibers()
-                            .iter()
-                            .map(|f| {
-                                format!(
-                                    "{}[{}]state={:?} idle={}",
-                                    f.name,
-                                    f.id,
-                                    f.inner.lock().unwrap().state,
-                                    f.schedule_debug_idle()
-                                )
-                            })
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    }
-                );
-            }
-            if spins > 20_000_000 {
-                return;
-            }
+        if crate::fiber::wait_until_quiescent(crate::fiber::QUIESCE_TIMEOUT) {
+            return;
         }
+        // Timed out: a stuck op almost always means a body or disposer is
+        // blocking, so dump the state of every fiber to point at it.
+        let report = {
+            let registry = self.registry.lock().unwrap();
+            registry
+                .all_fibers()
+                .iter()
+                .map(|f| {
+                    format!(
+                        "{}[{}]state={:?} idle={}",
+                        f.name,
+                        f.id,
+                        f.inner.lock().unwrap().state,
+                        f.schedule_debug_idle()
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        self.logger.log(
+            crate::logger::LogLevel::Warn,
+            "yacordis/quiesce",
+            &format!(
+                "gave up after {:?} with pending_ops={}; fibers=[{report}]",
+                crate::fiber::QUIESCE_TIMEOUT,
+                crate::fiber::pending_ops()
+            ),
+        );
     }
 }
 

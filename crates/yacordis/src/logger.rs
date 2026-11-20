@@ -88,17 +88,16 @@ impl Logger for DiscardLogger {
     fn log(&self, _: LogLevel, _: &str, _: &str) {}
 }
 
-pub(crate) struct LoggerHandle(RwLock<Arc<dyn Logger>>);
-
-impl Clone for LoggerHandle {
-    fn clone(&self) -> Self {
-        Self(RwLock::new(self.0.read().unwrap().clone()))
-    }
-}
+/// Shared handle onto the runtime's diagnostic sink.
+///
+/// Clones share one lock, so `set` on any clone is observed by all of
+/// them — the sink is a property of the runtime, not of the handle.
+#[derive(Clone)]
+pub(crate) struct LoggerHandle(Arc<RwLock<Arc<dyn Logger>>>);
 
 impl LoggerHandle {
     pub fn new(inner: Arc<dyn Logger>) -> Self {
-        Self(RwLock::new(inner))
+        Self(Arc::new(RwLock::new(inner)))
     }
 
     pub fn set(&self, inner: Arc<dyn Logger>) {
@@ -108,19 +107,6 @@ impl LoggerHandle {
     pub fn log(&self, level: LogLevel, target: &str, message: &str) {
         let logger = self.0.read().unwrap().clone();
         logger.log(level, target, message);
-    }
-
-    /// Log an error, flattening nested error sources into lines.
-    #[allow(dead_code)] // exercised by tests and future modules
-    pub fn log_error(&self, target: &str, error: &(dyn std::error::Error + 'static)) {
-        let mut message = error.to_string();
-        let mut source = error.source();
-        while let Some(e) = source {
-            message.push_str("\n  caused by: ");
-            message.push_str(&e.to_string());
-            source = e.source();
-        }
-        self.log(LogLevel::Error, target, &message);
     }
 }
 
@@ -242,6 +228,10 @@ impl LoggerService {
     }
 
     /// Emit a record if `level` passes the threshold.
+    ///
+    /// Sinks are snapshotted, then called without the registry lock:
+    /// a sink that re-enters the service (`set_level`, `add_sink`) must
+    /// not deadlock against the emission that is calling it.
     pub fn log(&self, level: LogLevel, scope: &str, message: &str) {
         let min = self.min_level.read().unwrap().unwrap_or(LogLevel::Info);
         if level < min {
@@ -253,9 +243,15 @@ impl LoggerService {
             message: message.to_owned(),
             timestamp: SystemTime::now(),
         };
-        let sinks = self.sinks.read().unwrap();
-        for entry in sinks.iter() {
-            entry.sink.write(&record);
+        let sinks: Vec<Arc<dyn LogSink>> = self
+            .sinks
+            .read()
+            .unwrap()
+            .iter()
+            .map(|entry| entry.sink.clone())
+            .collect();
+        for sink in sinks {
+            sink.write(&record);
         }
     }
 }
@@ -390,5 +386,34 @@ impl Component for LoggerComponent {
             .map_err(ComponentError::new)?;
         service.add_sink(StderrSink);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    /// Counts the records it receives.
+    struct Counting(AtomicUsize);
+
+    impl Logger for Counting {
+        fn log(&self, _: LogLevel, _: &str, _: &str) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn clones_observe_a_sink_installed_through_another_handle() {
+        let handle = LoggerHandle::new(Arc::new(Counting(AtomicUsize::new(0))));
+        let clone = handle.clone();
+        let replacement = Arc::new(Counting(AtomicUsize::new(0)));
+        clone.set(replacement.clone());
+        handle.log(LogLevel::Error, "target", "message");
+        assert_eq!(
+            replacement.0.load(Ordering::SeqCst),
+            1,
+            "clones share one sink: a set through one is seen by all"
+        );
     }
 }

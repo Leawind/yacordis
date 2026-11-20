@@ -143,6 +143,26 @@ pub(crate) fn pending_ops() -> i64 {
     PENDING_OPS.load(Ordering::SeqCst)
 }
 
+/// How long a quiesce wait blocks before giving up. An op that never
+/// completes is a deadlock in user code (a body or disposer blocking
+/// forever); waiting without a bound would hide it behind a hung host.
+pub(crate) const QUIESCE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Wait until no lifecycle op is pending anywhere in the process, giving
+/// up after `timeout`. Returns `false` on timeout; reporting that is left
+/// to the caller (the process-global helper has no logger, the
+/// per-runtime one does).
+pub(crate) fn wait_until_quiescent(timeout: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    while pending_ops() > 0 {
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_micros(50));
+    }
+    true
+}
+
 pub(crate) struct Fiber {
     pub id: u64,
     pub name: String,
@@ -823,4 +843,30 @@ pub(crate) fn disposal_disposer(fiber: &Arc<Fiber>) -> crate::effect::Disposer {
         // upgrade failing means the fiber was already torn down.
         let _ = fiber.upgrade().map(|fiber| fiber.dispose(&core));
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_quiesce_wait_gives_up_when_an_op_never_completes() {
+        assert!(
+            wait_until_quiescent(std::time::Duration::from_millis(10)),
+            "an idle process is quiescent immediately"
+        );
+        // Simulate an op that never finishes. The wait must be bounded so
+        // a stuck body or disposer surfaces instead of wedging the caller.
+        PENDING_OPS.fetch_add(1, Ordering::SeqCst);
+        let started = std::time::Instant::now();
+        let quiescent = wait_until_quiescent(std::time::Duration::from_millis(30));
+        let waited = started.elapsed();
+        PENDING_OPS.fetch_sub(1, Ordering::SeqCst);
+        assert!(!quiescent, "a pending op must time out");
+        assert!(waited >= std::time::Duration::from_millis(30));
+        assert!(
+            waited < std::time::Duration::from_secs(5),
+            "gave up far too late ({waited:?})"
+        );
+    }
 }
