@@ -75,6 +75,6 @@ With all three honored, the lifecycle `install → use → dispose → unload` r
 Known limitations accepted in the current design:
 
 1. Typed events re-deserialize per listener (small scale).
-2. `Fiber.parent`/`Fiber.isolate` fields are currently write-only (reserved for scope introspection).
+2. `Fiber.isolate` is currently write-only (reserved for scope introspection); `Fiber.parent` is read by intercept visibility (the fiber-chain walk).
 
 Resolved: the former concurrency-interleaving debt (a cascade triggered by another thread may land after `install`/`dispose` returned) is closed for unload — the one operation that could not tolerate it. Unload waits for process quiescence (`yacordis::quiesce`) and then verifies its preconditions against the live gate instead of trusting returned flags; callers that need a settled view have `quiesce`/`wait_for`. Lifecycle calls themselves remain eventually-consistent under interleaving, by design.
