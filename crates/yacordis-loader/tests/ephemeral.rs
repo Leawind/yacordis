@@ -1,9 +1,10 @@
 //! Ephemeral materialization: the copy exists only while it is mapped.
 //!
-//! Off Windows the copy is unlinked as soon as the mapping exists, so the
-//! cache directory is empty while the component runs. Windows cannot
-//! delete a mapped image, so there the copy goes when the library is
-//! unloaded.
+//! Each ephemeral load maps a private, temp-named copy. Off Windows the
+//! copy is unlinked as soon as the mapping exists, so the cache directory
+//! is empty while the component runs. Windows cannot delete a mapped
+//! image, so there the copy goes when the library is unloaded. A failed
+//! load maps nothing and deletes its copy on every platform.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -11,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use yacordis::prelude::*;
-use yacordis_loader::{BuildOptions, Loader};
+use yacordis_loader::{BuildOptions, LoadError, Loader};
 
 fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/demo-component")
@@ -101,6 +102,14 @@ fn an_ephemeral_load_leaves_no_copy_after_the_mapping_closes() {
         library.digest().is_some(),
         "materialized loads carry a digest"
     );
+    let copy_name = copy
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("utf8 copy name");
+    assert!(
+        copy_name.starts_with('.') && copy_name.ends_with(".tmp"),
+        "an ephemeral copy lives in the temp namespace `prune_materialized` ages out: {copy_name}"
+    );
 
     let ctx = context();
     let handle = library
@@ -186,7 +195,7 @@ fn an_ephemeral_bytes_load_leaves_no_copy_after_the_mapping_closes() {
 }
 
 #[test]
-fn the_last_ephemeral_unload_deletes_a_shared_copy() {
+fn concurrent_ephemeral_loads_own_separate_copies() {
     let root = scratch("ephemeral-shared");
     let _ = std::fs::remove_dir_all(&root);
     let working = root.join("component");
@@ -205,12 +214,12 @@ fn the_last_ephemeral_unload_deletes_a_shared_copy() {
         second.digest(),
         "identical content, one digest"
     );
-    assert_eq!(
+    assert_ne!(
         first.path(),
         second.path(),
-        "identical content shares the copy path"
+        "each ephemeral load owns a private copy"
     );
-    let copy = first.path().to_path_buf();
+    let first_copy = first.path().to_path_buf();
 
     let ctx = context();
     let handle1 = first
@@ -222,33 +231,53 @@ fn the_last_ephemeral_unload_deletes_a_shared_copy() {
 
     handle1.dispose();
     first.unload().expect("unload the first");
-
+    assert!(
+        eventually(|| !first_copy.exists()),
+        "the first load's copy goes with its own unload"
+    );
     #[cfg(windows)]
-    {
-        // The second mapping still holds the image.
-        assert!(
-            copy.exists(),
-            "the copy survives while another mapping holds it"
-        );
-    }
-    #[cfg(not(windows))]
-    {
-        // Both loads unlinked their copy at load time; the second load
-        // copied the artifact again, so the path it maps is already gone.
-        assert!(
-            eventually(|| !copy.exists()),
-            "the copy is unlinked at load off Windows"
-        );
-    }
+    assert!(
+        second.path().exists(),
+        "the second load's copy is untouched"
+    );
 
     handle2.dispose();
     second.unload().expect("unload the second");
     assert!(
-        eventually(|| !copy.exists()),
-        "the last unload deletes the copy"
+        eventually(|| names(&cache).is_empty()),
+        "each load removes its own copy: {:?}",
+        names(&cache)
     );
+}
+
+#[test]
+fn a_failed_ephemeral_load_leaves_nothing() {
+    let root = scratch("ephemeral-failed");
+    let _ = std::fs::remove_dir_all(&root);
+    let cache = root.join("cache");
+    std::fs::create_dir_all(&cache).expect("create cache");
+
+    // Bytes that are no component binary fail to map on every platform.
+    let error = Loader::load_bytes_ephemeral(b"not a component binary", &cache)
+        .err()
+        .expect("garbage bytes do not load");
+    assert!(matches!(error, LoadError::Library(_)), "{error}");
     assert!(
         eventually(|| names(&cache).is_empty()),
-        "no copy is left in the cache"
+        "the failed bytes load leaves no copy: {:?}",
+        names(&cache)
+    );
+
+    // The same holds for a source artifact whose file cannot be mapped.
+    let garbage = root.join("garbage.dll");
+    std::fs::write(&garbage, b"not a component binary").expect("write garbage artifact");
+    let error = Loader::load_materialized_ephemeral(&garbage, &cache)
+        .err()
+        .expect("a garbage artifact does not load");
+    assert!(matches!(error, LoadError::Library(_)), "{error}");
+    assert!(
+        eventually(|| names(&cache).is_empty()),
+        "the failed source load leaves no copy: {:?}",
+        names(&cache)
     );
 }

@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-pub(crate) use crate::digest::{Sha256, sha256_hex};
+use crate::digest::sha256_hex;
 use crate::loader::{ComponentLibrary, LoadError, Loader};
 
 /// Index/repository layer errors.

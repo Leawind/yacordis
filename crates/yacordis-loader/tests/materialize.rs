@@ -245,7 +245,7 @@ fn rebuilding_the_artifact_while_the_old_copy_is_mapped_loads_new_code() {
 }
 
 #[test]
-fn prune_removes_unkept_copies_and_leaves_foreign_files() {
+fn prune_removes_unkept_copies_and_stale_temps_leaving_the_rest() {
     let cache = scratch("prune");
     let _ = std::fs::remove_dir_all(&cache);
     std::fs::create_dir_all(&cache).expect("create cache");
@@ -273,6 +273,28 @@ fn prune_removes_unkept_copies_and_leaves_foreign_files() {
     assert!(
         cache.join(".123-0.tmp").is_file(),
         "temporary files are left to their writer"
+    );
+
+    // A temp copy older than the grace cannot be in flight: it is what a
+    // crashed process leaves behind, and prune reclaims it.
+    let stale = cache.join(".123-1.tmp");
+    std::fs::write(&stale, b"crash leftover").expect("write stale temp");
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&stale)
+        .expect("open the stale temp");
+    file.set_times(
+        std::fs::FileTimes::new()
+            .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(1200)),
+    )
+    .expect("backdate the stale temp");
+    drop(file);
+
+    Loader::prune_materialized(&cache, &[&kept]).expect("prune the cache again");
+    assert!(!stale.exists(), "a stale temp copy is a crash leftover");
+    assert!(
+        cache.join(".123-0.tmp").is_file(),
+        "a fresh temp copy is still left to its writer"
     );
     Loader::prune_materialized(scratch("prune-missing"), &[]).expect("a missing cache is fine");
 }

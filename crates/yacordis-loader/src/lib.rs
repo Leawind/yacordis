@@ -48,7 +48,12 @@
 //! the producer's path stays writable while the previous copy is still
 //! mapped, and a rebuild cannot truncate the bytes under an existing
 //! mapping on Unix. In-place loading remains right for prebuilt binaries
-//! that never change under the process.
+//! that never change under the process. When even the copy should not
+//! outlive its mapping, the ephemeral variants
+//! ([`Loader::load_materialized_ephemeral`],
+//! [`Loader::load_bytes_ephemeral`]) map a private copy and remove it —
+//! at load on POSIX, at unload on Windows — leaving nothing behind on a
+//! failed load either.
 //!
 //! The proof is the component author's responsibility to make possible.
 //! The contract's invariants, in code terms:

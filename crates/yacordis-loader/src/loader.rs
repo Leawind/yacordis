@@ -1,6 +1,6 @@
 //! Loading prebuilt cdylib components and adapting them into the core.
 
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -81,12 +81,15 @@ pub struct ComponentManifest {
     pub optional: Vec<String>,
 }
 
-/// A content-addressed copy of a component artifact.
+/// A copy of a component artifact, ready to be mapped.
 ///
-/// The copy lives at `<cache>/<sha256>.<ext>`, where `<ext>` is the
-/// platform's shared-library extension, and is what a materialized load
-/// maps. It is written through a temporary file renamed into place, and
-/// identical content reuses the existing copy.
+/// A published copy lives at `<cache>/<sha256>.<ext>`, where `<ext>` is
+/// the platform's shared-library extension, and is shared by digest:
+/// identical content reuses the existing copy, and a new copy is written
+/// through a temporary file renamed into place. The private copy of an
+/// ephemeral load ([`Loader::load_materialized_ephemeral`],
+/// [`Loader::load_bytes_ephemeral`]) is temp-named instead and exists
+/// only while it is mapped.
 #[derive(Debug, Clone)]
 pub struct MaterializedArtifact {
     source: Option<PathBuf>,
@@ -127,10 +130,8 @@ pub struct ComponentLibrary {
     /// Parsed from the component's exported manifest.
     pub manifest: ComponentManifest,
     adapter: Arc<FfiComponent>,
-    /// Set when the library was loaded from a materialized copy.
-    digest: Option<String>,
-    /// The producer's artifact path for a materialized load.
-    source: Option<PathBuf>,
+    /// Provenance of a materialized load; `None` for in-place loads.
+    artifact: Option<MaterializedArtifact>,
 }
 
 // SAFETY: the component ABI contract requires closures and state to be
@@ -199,8 +200,7 @@ impl ComponentLibrary {
             lease,
             manifest: parsed,
             adapter,
-            digest: None,
-            source: None,
+            artifact: None,
         })
     }
 
@@ -303,7 +303,9 @@ impl ComponentLibrary {
     /// In-place loads ([`Loader::load_file`]) return `None`.
     #[must_use]
     pub fn digest(&self) -> Option<&str> {
-        self.digest.as_deref()
+        self.artifact
+            .as_ref()
+            .map(|artifact| artifact.digest.as_str())
     }
 
     /// The producer's artifact path, for a materialized load.
@@ -312,7 +314,9 @@ impl ComponentLibrary {
     /// no source file.
     #[must_use]
     pub fn source_path(&self) -> Option<&Path> {
-        self.source.as_deref()
+        self.artifact
+            .as_ref()
+            .and_then(|artifact| artifact.source.as_deref())
     }
 }
 
@@ -478,8 +482,9 @@ impl Loader {
         let source = source.as_ref();
         let cache_dir = cache_dir.as_ref();
         std::fs::create_dir_all(cache_dir).map_err(LoadError::Materialize)?;
+        let mut input = std::fs::File::open(source).map_err(LoadError::Materialize)?;
         let temp = temp_path(cache_dir);
-        let digest = copy_with_digest(source, &temp)?;
+        let digest = write_copy(&mut input, &temp)?;
         let path = cache_path(cache_dir, &digest);
         publish(&temp, &path)?;
         Ok(MaterializedArtifact {
@@ -514,32 +519,32 @@ impl Loader {
         load_artifact(materialize_bytes(bytes.as_ref(), cache_dir.as_ref())?)
     }
 
-    /// Materialize `source`, map the copy, and leave no copy behind once
-    /// the mapping is gone.
+    /// Materialize `source` into a private copy, map it, and leave nothing
+    /// behind once the mapping is gone — or when the load fails.
     ///
-    /// Off Windows the copy is unlinked as soon as the mapping exists:
-    /// POSIX keeps the contents alive through the open file, so the
-    /// directory entry is gone while the component runs. A mapped image
-    /// cannot be deleted on Windows, so there the copy stays until
-    /// [`ComponentLibrary::unload`] (or the last adapter drop) unmaps it.
-    /// A crash on either platform leaves the copy for
-    /// [`Loader::prune_materialized`].
+    /// The copy is private to this load, which is what makes the cleanup
+    /// unconditional: POSIX unlinks it as soon as the mapping exists (the
+    /// contents stay live through the mapping), and a shared digest name
+    /// would instead race a concurrent load's open against this unlink.
+    /// Windows cannot delete a mapped image, so there the copy goes when
+    /// the library unloads. A failed load maps nothing, so the copy is
+    /// deleted on both platforms; a crashed process leaves its copy for
+    /// [`Loader::prune_materialized`], which ages out temp-named files.
     ///
-    /// Off Windows each load therefore copies again instead of reusing a
-    /// cached copy: use [`Loader::load_materialized`] when sharing one copy
-    /// across loads matters more than leaving no files.
-    ///
-    /// The self-containment requirement of [`Loader::load_materialized`]
-    /// applies.
+    /// Use [`Loader::load_materialized`] when one shared copy across loads
+    /// matters more than leaving no files. The self-containment requirement
+    /// of [`Loader::load_materialized`] applies.
     pub fn load_materialized_ephemeral(
         source: impl AsRef<Path>,
         cache_dir: impl AsRef<Path>,
     ) -> Result<ComponentLibrary, LoadError> {
-        load_ephemeral(Self::materialize(source, cache_dir)?)
+        let source = source.as_ref();
+        let cache_dir = cache_dir.as_ref();
+        load_ephemeral(materialize_ephemeral(source, cache_dir)?)
     }
 
-    /// Materialize an in-memory component binary, map the copy, and leave
-    /// no copy behind once the mapping is gone.
+    /// Materialize an in-memory component binary into a private copy, map
+    /// it, and leave nothing behind once the mapping is gone.
     ///
     /// The embedded-artifact counterpart of
     /// [`Loader::load_materialized_ephemeral`].
@@ -547,16 +552,26 @@ impl Loader {
         bytes: impl AsRef<[u8]>,
         cache_dir: impl AsRef<Path>,
     ) -> Result<ComponentLibrary, LoadError> {
-        load_ephemeral(materialize_bytes(bytes.as_ref(), cache_dir.as_ref())?)
+        let cache_dir = cache_dir.as_ref();
+        load_ephemeral(materialize_ephemeral_bytes(bytes.as_ref(), cache_dir)?)
     }
 
-    /// Delete cached copies whose digest is not in `keep`.
+    /// Delete cached copies the cache no longer needs.
     ///
-    /// Only digest-named files are candidates; foreign files and in-progress
-    /// temporary files are left alone. Deletion is best effort: a copy still
-    /// mapped by a live process cannot be removed on Windows, so it stays.
-    /// Digests are the lowercase hex strings from
-    /// [`MaterializedArtifact::digest`] and [`ComponentLibrary::digest`].
+    /// Two namespaces live in a materialization cache:
+    ///
+    /// - **Digest-named copies** (`<sha256>.<ext>`) form the shareable
+    ///   cache: a copy whose digest is not in `keep` is deleted. Digests
+    ///   are the lowercase hex strings from
+    ///   [`MaterializedArtifact::digest`] and [`ComponentLibrary::digest`].
+    /// - **Temp-named copies** (`.<pid>-…-….tmp`, also what ephemeral
+    ///   loads map) are never shareable, so one older than the grace
+    ///   (`TEMP_GRACE`) is a crash leftover and is deleted; a fresh one
+    ///   may be an in-flight write by another process and is left alone.
+    ///
+    /// Deletion is best effort: a copy still mapped by a live process
+    /// cannot be removed on Windows, so it stays. Foreign files are left
+    /// untouched.
     pub fn prune_materialized(cache_dir: impl AsRef<Path>, keep: &[&str]) -> std::io::Result<()> {
         let cache_dir = cache_dir.as_ref();
         let entries = match std::fs::read_dir(cache_dir) {
@@ -575,6 +590,15 @@ impl Loader {
             let Some(name) = name.to_str() else {
                 continue;
             };
+            if is_temp_name(name) {
+                // Past the grace, a temp copy cannot be in flight: it is a
+                // crash leftover. Best effort: a still-mapped copy on
+                // Windows refuses deletion and stays.
+                if older_than(&entry, TEMP_GRACE) {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+                continue;
+            }
             let Some((stem, _extension)) = name.split_once('.') else {
                 continue;
             };
@@ -695,36 +719,85 @@ fn load_artifact(artifact: MaterializedArtifact) -> Result<ComponentLibrary, Loa
     // SAFETY: same trust model as `Loader::load_file`: the caller chose the
     // artifact.
     let mut library = unsafe { ComponentLibrary::load(&artifact.path)? };
-    library.digest = Some(artifact.digest);
-    library.source = artifact.source;
+    library.artifact = Some(artifact);
     Ok(library)
 }
 
 /// Load a materialized copy that must not outlive its mapping.
+///
+/// The copy is private to this load (see `materialize_ephemeral*`), which
+/// is what makes the cleanup unconditional: a failed load maps nothing —
+/// a failed `dlopen`, or the dropped `Library` after a failed symbol
+/// lookup — so the copy is garbage and is deleted on both platforms. On
+/// success POSIX drops the directory entry at once (the mapping keeps the
+/// contents alive); Windows cannot delete a mapped image, so the lease
+/// removes the copy when the library unmaps.
 fn load_ephemeral(artifact: MaterializedArtifact) -> Result<ComponentLibrary, LoadError> {
-    #[cfg(not(windows))]
     let path = artifact.path.clone();
-    let library = load_artifact(artifact)?;
-    #[cfg(windows)]
-    library.lease.mark_remove_on_close();
-    #[cfg(not(windows))]
-    {
-        // Best effort: the mapping owns the contents from here on. A copy
-        // that cannot be removed stays for `prune_materialized`.
-        let _ = std::fs::remove_file(&path);
+    match load_artifact(artifact) {
+        Ok(library) => {
+            #[cfg(windows)]
+            library.lease.mark_remove_on_close();
+            #[cfg(not(windows))]
+            let _ = std::fs::remove_file(&path);
+            Ok(library)
+        }
+        Err(error) => {
+            let _ = std::fs::remove_file(&path);
+            Err(error)
+        }
     }
-    Ok(library)
 }
 
 fn materialize_bytes(bytes: &[u8], cache_dir: &Path) -> Result<MaterializedArtifact, LoadError> {
     std::fs::create_dir_all(cache_dir).map_err(LoadError::Materialize)?;
-    let digest = crate::registry::sha256_hex(bytes);
+    let digest = crate::digest::sha256_hex(bytes);
     let path = cache_path(cache_dir, &digest);
     if !path.is_file() {
         let temp = temp_path(cache_dir);
-        write_bytes(bytes, &temp)?;
+        write_copy(&mut std::io::Cursor::new(bytes), &temp)?;
         publish(&temp, &path)?;
     }
+    Ok(MaterializedArtifact {
+        source: None,
+        path,
+        digest,
+    })
+}
+
+/// Materialize a private copy for an ephemeral load.
+///
+/// The copy is written straight to a temp-named file instead of a shared
+/// digest name. That is what makes ephemeral cleanup unconditional (a
+/// private copy is always the caller's to delete), and it avoids a race
+/// the digest name would add off Windows: this load unlinks the copy as
+/// soon as it is mapped, which would make a concurrent load of the same
+/// content fail to open the very copy it just published. The name is
+/// temp-namespaced, so [`Loader::prune_materialized`] ages out what a
+/// crashed process leaves behind.
+fn materialize_ephemeral(
+    source: &Path,
+    cache_dir: &Path,
+) -> Result<MaterializedArtifact, LoadError> {
+    std::fs::create_dir_all(cache_dir).map_err(LoadError::Materialize)?;
+    let mut input = std::fs::File::open(source).map_err(LoadError::Materialize)?;
+    let path = temp_path(cache_dir);
+    let digest = write_copy(&mut input, &path)?;
+    Ok(MaterializedArtifact {
+        source: Some(source.to_path_buf()),
+        path,
+        digest,
+    })
+}
+
+/// The in-memory counterpart of [`materialize_ephemeral`].
+fn materialize_ephemeral_bytes(
+    bytes: &[u8],
+    cache_dir: &Path,
+) -> Result<MaterializedArtifact, LoadError> {
+    std::fs::create_dir_all(cache_dir).map_err(LoadError::Materialize)?;
+    let path = temp_path(cache_dir);
+    let digest = write_copy(&mut std::io::Cursor::new(bytes), &path)?;
     Ok(MaterializedArtifact {
         source: None,
         path,
@@ -759,15 +832,15 @@ fn publish(temp: &Path, path: &Path) -> Result<(), LoadError> {
     }
 }
 
-/// Copy `source` to `temp`, hashing the bytes in the same pass.
-fn copy_with_digest(source: &Path, temp: &Path) -> Result<String, LoadError> {
+/// Write `input` to a new temporary file, hashing the bytes in the same
+/// pass. A failed write removes the partial file.
+fn write_copy(input: &mut dyn std::io::Read, temp: &Path) -> Result<String, LoadError> {
     let result = (|| -> std::io::Result<String> {
-        let mut input = std::fs::File::open(source)?;
         let mut output = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(temp)?;
-        let mut hasher = crate::registry::Sha256::new();
+        let mut hasher = crate::digest::Sha256::new();
         let mut buffer = [0u8; 64 * 1024];
         loop {
             let read = input.read(&mut buffer)?;
@@ -786,21 +859,6 @@ fn copy_with_digest(source: &Path, temp: &Path) -> Result<String, LoadError> {
     result.map_err(LoadError::Materialize)
 }
 
-fn write_bytes(bytes: &[u8], temp: &Path) -> Result<(), LoadError> {
-    let result = (|| -> std::io::Result<()> {
-        let mut output = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(temp)?;
-        output.write_all(bytes)?;
-        output.sync_all()
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(temp);
-    }
-    result.map_err(LoadError::Materialize)
-}
-
 fn temp_path(cache_dir: &Path) -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now()
@@ -812,6 +870,28 @@ fn temp_path(cache_dir: &Path) -> PathBuf {
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     ))
+}
+
+/// The temp namespace [`temp_path`] writes into and ephemeral loads map:
+/// never a shareable copy, so [`Loader::prune_materialized`] may age it.
+fn is_temp_name(name: &str) -> bool {
+    name.starts_with('.') && name.ends_with(".tmp")
+}
+
+/// A temp-named copy older than this is a crash leftover, not an
+/// in-flight write: writing a copy takes seconds, so the margin is wide.
+const TEMP_GRACE: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// Whether `entry` was last modified at least `age` ago. A future or
+/// unreadable mtime reads as "not old": pruning never acts on a file it
+/// cannot date.
+fn older_than(entry: &std::fs::DirEntry, age: std::time::Duration) -> bool {
+    entry
+        .metadata()
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .is_some_and(|elapsed| elapsed >= age)
 }
 
 #[cfg(test)]
