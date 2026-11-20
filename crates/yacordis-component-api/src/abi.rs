@@ -21,7 +21,9 @@ pub const ABI_VERSION: u32 = 4;
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct RawBuffer {
-    /// Pointer to the bytes; never null (empty buffers allocate 1 byte).
+    /// Pointer to the bytes. Allocated buffers never use null — an empty
+    /// buffer still allocates one byte — so null identifies
+    /// [`RawBuffer::EMPTY`], the output placeholder a callee fills in.
     pub ptr: *mut u8,
     /// Length in bytes.
     pub len: usize,
