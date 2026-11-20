@@ -108,10 +108,10 @@ pub trait Component: Send + Sync + 'static {
     }
 
     /// Config schema. When declared, every install and update validates
-    /// (and resolves — defaults are filled in) the config through it
-    /// before the body runs; a rejected config leaves the fiber `Failed`
-    /// with no side effects, and `update` refuses it with an error while
-    /// keeping the previous config. See [`crate::schema`].
+    /// and resolves the config through it before the body runs; resolving
+    /// fills in declared defaults. A rejected config leaves the fiber
+    /// `Failed` with no side effects, and `update` refuses it with an
+    /// error while keeping the previous config. See [`crate::Schema`].
     fn schema(&self) -> Option<crate::schema::Schema> {
         None
     }

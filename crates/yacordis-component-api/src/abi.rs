@@ -59,7 +59,7 @@ impl RawCallbacks {
 
 /// Component code the host can invoke (and drop) later.
 ///
-/// Constructed only through [`crate::callback`] constructors; the raw
+/// Constructed only through `crate::callback` constructors; the raw
 /// struct is `Copy` so arrays of callbacks can cross the boundary.
 #[repr(C)]
 #[derive(Clone, Copy)]

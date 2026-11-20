@@ -388,10 +388,10 @@ impl Loader {
 
     /// Build a component crate from source and load the resulting cdylib.
     ///
-    /// This is the developer path — running `cargo` inside the host
-    /// process — mirroring cordis's write-and-build story; end users
-    /// normally receive prebuilt binaries via [`Loader::load_file`] or
-    /// [`Loader::fetch`].
+    /// This is the developer path: running `cargo` inside the host
+    /// process mirrors cordis's write-and-build story. End users normally
+    /// receive prebuilt binaries via [`Loader::load_file`] or
+    /// `Loader::fetch`.
     pub fn build_and_load(
         source_dir: impl AsRef<Path>,
         options: &BuildOptions,

@@ -21,7 +21,7 @@
 //! `inject`/`provides` come from the attribute, so dependency-cycle
 //! diagnostics (and reactive gating) see the declarations up front,
 //! before the body runs. `schema` is an arbitrary expression evaluating to
-//! [`yacordis::Schema`] — install and update then validate and resolve
+//! `yacordis::Schema`. Install and update then validate and resolve
 //! the config before the body runs (see `yacordis::schema`). The
 //! component struct inherits the function's visibility and its
 //! `Component::name` defaults to the function name.
