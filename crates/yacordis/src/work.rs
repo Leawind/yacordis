@@ -33,6 +33,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
 use std::task::{Context as TaskContext, Poll, Wake, Waker};
 use std::thread;
+use std::time::Duration;
 
 use serde_json::Value;
 
@@ -225,7 +226,8 @@ impl Context {
     }
 
     /// Spawn a future on the framework's executor thread (one per
-    /// `Core`, started lazily, alive until process exit). The unit is an
+    /// `Core`, started lazily; the thread retires shortly after the
+    /// runtime is dropped). The unit is an
     /// effect of the current fiber with the same drain semantics as
     /// [`Context::run_blocking`]; abort drops the future at its next
     /// await point.
@@ -244,7 +246,7 @@ impl Context {
             .core
             .work
             .exec
-            .get_or_init(|| Executor::start(self.core.clone()))
+            .get_or_init(Executor::start)
             .inner
             .clone();
         let unit = self.register_work(label.into(), fiber, on_done, Some(exec.clone()))?;
@@ -396,9 +398,11 @@ pub(crate) struct Executor {
 }
 
 impl Executor {
-    /// Start the executor thread. It holds an `Arc<Core>`, so the core
-    /// (and the executor) live until process exit.
-    fn start(core: Arc<Core>) -> Executor {
+    /// Start the executor thread. It holds the executor state weakly: a
+    /// runtime that is dropped (with no work unit left to keep the state
+    /// alive) lets the thread retire instead of pinning the core until
+    /// process exit.
+    fn start() -> Executor {
         let inner = Arc::new(ExecInner {
             ready: Mutex::new(ExecState {
                 queue: VecDeque::new(),
@@ -406,17 +410,23 @@ impl Executor {
             }),
             signal: Condvar::new(),
         });
-        let thread_inner = inner.clone();
+        let thread_inner = Arc::downgrade(&inner);
         thread::Builder::new()
             .name("yacordis-executor".into())
-            .spawn(move || executor_loop(core, thread_inner))
+            .spawn(move || executor_loop(thread_inner))
             .expect("start executor thread");
         Executor { inner }
     }
 }
 
-fn executor_loop(_core: Arc<Core>, exec: Arc<ExecInner>) {
+fn executor_loop(exec: Weak<ExecInner>) {
     loop {
+        // The state dies with the last owner (the runtime's registry, or
+        // the final in-flight work unit). Nothing can ever submit again
+        // once it is gone, so the thread retires.
+        let Some(exec) = exec.upgrade() else {
+            return;
+        };
         // 1. Finish aborted parked tasks (callbacks run outside locks).
         let aborted: Vec<Arc<ExecTask>> = {
             let mut g = exec.ready.lock().unwrap();
@@ -480,7 +490,10 @@ fn executor_loop(_core: Arc<Core>, exec: Arc<ExecInner>) {
             continue;
         }
 
-        // 3. Park until a waker or submitter wakes us.
+        // 3. Park until a waker or submitter wakes us, with a timeout so
+        // a dropped runtime is noticed even without a final wake. The
+        // state guard releases at iteration end, and the strong handle
+        // with it — a retired runtime is observed on the next upgrade.
         let mut g = exec.ready.lock().unwrap();
         if g.queue.is_empty()
             && !g
@@ -488,7 +501,11 @@ fn executor_loop(_core: Arc<Core>, exec: Arc<ExecInner>) {
                 .values()
                 .any(|t| t.aborted.load(Ordering::Acquire))
         {
-            g = exec.signal.wait(g).unwrap();
+            let (waited, _) = exec
+                .signal
+                .wait_timeout(g, Duration::from_millis(500))
+                .unwrap();
+            g = waited;
         }
     }
 }
