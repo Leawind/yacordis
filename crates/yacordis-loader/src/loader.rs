@@ -225,6 +225,11 @@ impl ComponentLibrary {
         if !yacordis::executing_lifecycle_op() {
             yacordis::quiesce();
         }
+        // Final sweep of the library's own residue: after every fiber of
+        // this library is disposed, its context handles must leave the
+        // table, so the lifecycle `install → use → dispose → unload`
+        // really returns the process to the state before the load.
+        crate::vtable::handles().sweep_dead_contexts();
         self.lease.close(&self.adapter)
     }
 

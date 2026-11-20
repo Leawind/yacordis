@@ -34,9 +34,29 @@ impl HandleTable {
     }
 
     pub(crate) fn insert(&self, object: HostObject) -> u64 {
+        // Component activity is the sweep point: drop every context handle
+        // whose fiber is already gone. A context pins its whole runtime
+        // (`Arc<Core>`), so stale entries would accumulate across
+        // install/dispose cycles in long-running hosts — the audit at
+        // `fiber_dispose` only covers component-initiated disposal, not
+        // host-side or cascaded one.
+        self.sweep_dead_contexts();
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         self.map.lock().unwrap().insert(id, object);
         id
+    }
+
+    /// Drop every context handle whose fiber is gone. Safe: a dead
+    /// fiber's context resolves nothing; a handle the component still
+    /// holds (the value is `Copy`) keeps failing gracefully.
+    pub(crate) fn sweep_dead_contexts(&self) {
+        self.map
+            .lock()
+            .unwrap()
+            .retain(|_, object| match object {
+                HostObject::Context(ctx) => ctx.fiber_alive(),
+                _ => true,
+            });
     }
 
     /// Look up a context handle. Entries whose fiber has been torn down
