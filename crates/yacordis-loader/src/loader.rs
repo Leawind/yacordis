@@ -317,20 +317,35 @@ const LINT_RULES: &[(&str, &str)] = &[
 /// (ast-grep reads its configuration from disk; `ruleDirs` resolves
 /// relative to the config file). Keyed by process id under the system
 /// temp dir and left to the OS cleanup.
-fn lint_config_tree() -> String {
+///
+/// Returns `None` when the tree cannot be written (read-only temp dir,
+/// full disk, security software): the lint is advisory, so an
+/// unavailable rule tree degrades exactly like a missing ast-grep
+/// instead of failing the load path.
+fn lint_config_tree() -> Option<String> {
     use std::sync::OnceLock;
-    static TREE: OnceLock<String> = OnceLock::new();
+    static TREE: OnceLock<Option<String>> = OnceLock::new();
     TREE.get_or_init(|| {
         let root = std::env::temp_dir().join(format!("yacordis-lint-rules-{}", std::process::id()));
-        let rules = root.join("rules");
-        std::fs::create_dir_all(&rules).expect("create the lint rule tree");
-        std::fs::write(root.join("sgconfig.yml"), LINT_SGCONFIG).expect("write sgconfig.yml");
-        for (name, text) in LINT_RULES {
-            std::fs::write(rules.join(name), text).expect("write the lint rule");
-        }
-        root.join("sgconfig.yml").to_string_lossy().into_owned()
+        write_rule_tree(&root)
+            .ok()
+            .map(|()| root.join("sgconfig.yml").to_string_lossy().into_owned())
     })
     .clone()
+}
+
+/// Write the embedded rule set under `root`. Split out of
+/// [`lint_config_tree`] (whose `OnceLock` makes both outcomes
+/// unreachable in one process) so the writable and unwritable paths are
+/// both testable.
+fn write_rule_tree(root: &Path) -> std::io::Result<()> {
+    let rules = root.join("rules");
+    std::fs::create_dir_all(&rules)?;
+    std::fs::write(root.join("sgconfig.yml"), LINT_SGCONFIG)?;
+    for (name, text) in LINT_RULES {
+        std::fs::write(rules.join(name), text)?;
+    }
+    Ok(())
 }
 
 /// Run the bundled ast-grep unload-contract lint over a component source
@@ -338,8 +353,12 @@ fn lint_config_tree() -> String {
 /// linter is installed and reports violations; returns `Ok` when
 /// ast-grep is unavailable (the lint is best-effort).
 pub fn lint_source(source_dir: impl AsRef<Path>) -> Result<(), String> {
+    let Some(config) = lint_config_tree() else {
+        // Rule tree unavailable: nothing to lint with.
+        return Ok(());
+    };
     let output = std::process::Command::new("ast-grep")
-        .args(["scan", "--config", &lint_config_tree()])
+        .args(["scan", "--config", &config])
         .arg(source_dir.as_ref())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -467,5 +486,38 @@ impl Loader {
         std::io::copy(&mut reader, &mut file)
             .map_err(|e| LoadError::Fetch(format!("download interrupted: {e}")))?;
         Ok(path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch_path(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("yacordis-lint-{tag}-{}", std::process::id()))
+    }
+
+    #[test]
+    fn rule_tree_writes_every_rule_to_a_writable_root() {
+        let root = scratch_path("tree");
+        let _ = std::fs::remove_dir_all(&root);
+        write_rule_tree(&root).expect("writable temp dir");
+        assert!(root.join("sgconfig.yml").is_file(), "missing sgconfig.yml");
+        for (name, _) in LINT_RULES {
+            assert!(root.join("rules").join(name).is_file(), "missing {name}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_unwritable_rule_tree_degrades_instead_of_panicking() {
+        // A root whose parent is a regular file cannot be created on any
+        // platform: the lint must report "unavailable", never panic the
+        // load path (the regression: three `expect`s did).
+        let blocker = scratch_path("blocker");
+        std::fs::write(&blocker, b"not a directory").expect("write blocker");
+        let unwritable = blocker.join("rules-root");
+        assert!(write_rule_tree(&unwritable).is_err());
+        let _ = std::fs::remove_file(&blocker);
     }
 }
