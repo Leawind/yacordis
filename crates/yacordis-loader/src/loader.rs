@@ -514,6 +514,42 @@ impl Loader {
         load_artifact(materialize_bytes(bytes.as_ref(), cache_dir.as_ref())?)
     }
 
+    /// Materialize `source`, map the copy, and leave no copy behind once
+    /// the mapping is gone.
+    ///
+    /// Off Windows the copy is unlinked as soon as the mapping exists:
+    /// POSIX keeps the contents alive through the open file, so the
+    /// directory entry is gone while the component runs. A mapped image
+    /// cannot be deleted on Windows, so there the copy stays until
+    /// [`ComponentLibrary::unload`] (or the last adapter drop) unmaps it.
+    /// A crash on either platform leaves the copy for
+    /// [`Loader::prune_materialized`].
+    ///
+    /// Off Windows each load therefore copies again instead of reusing a
+    /// cached copy: use [`Loader::load_materialized`] when sharing one copy
+    /// across loads matters more than leaving no files.
+    ///
+    /// The self-containment requirement of [`Loader::load_materialized`]
+    /// applies.
+    pub fn load_materialized_ephemeral(
+        source: impl AsRef<Path>,
+        cache_dir: impl AsRef<Path>,
+    ) -> Result<ComponentLibrary, LoadError> {
+        load_ephemeral(Self::materialize(source, cache_dir)?)
+    }
+
+    /// Materialize an in-memory component binary, map the copy, and leave
+    /// no copy behind once the mapping is gone.
+    ///
+    /// The embedded-artifact counterpart of
+    /// [`Loader::load_materialized_ephemeral`].
+    pub fn load_bytes_ephemeral(
+        bytes: impl AsRef<[u8]>,
+        cache_dir: impl AsRef<Path>,
+    ) -> Result<ComponentLibrary, LoadError> {
+        load_ephemeral(materialize_bytes(bytes.as_ref(), cache_dir.as_ref())?)
+    }
+
     /// Delete cached copies whose digest is not in `keep`.
     ///
     /// Only digest-named files are candidates; foreign files and in-progress
@@ -661,6 +697,22 @@ fn load_artifact(artifact: MaterializedArtifact) -> Result<ComponentLibrary, Loa
     let mut library = unsafe { ComponentLibrary::load(&artifact.path)? };
     library.digest = Some(artifact.digest);
     library.source = artifact.source;
+    Ok(library)
+}
+
+/// Load a materialized copy that must not outlive its mapping.
+fn load_ephemeral(artifact: MaterializedArtifact) -> Result<ComponentLibrary, LoadError> {
+    #[cfg(not(windows))]
+    let path = artifact.path.clone();
+    let library = load_artifact(artifact)?;
+    #[cfg(windows)]
+    library.lease.mark_remove_on_close();
+    #[cfg(not(windows))]
+    {
+        // Best effort: the mapping owns the contents from here on. A copy
+        // that cannot be removed stays for `prune_materialized`.
+        let _ = std::fs::remove_file(&path);
+    }
     Ok(library)
 }
 

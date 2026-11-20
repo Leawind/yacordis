@@ -23,6 +23,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use libloading::Library;
@@ -129,6 +130,9 @@ pub(crate) struct LibraryLease {
     fibers: Mutex<Vec<(FiberHandle, String)>>,
     /// The artifact path, for diagnostics.
     path: PathBuf,
+    /// Whether closing the lease also deletes the mapped file (an
+    /// ephemeral materialized copy).
+    remove_on_close: AtomicBool,
 }
 
 // SAFETY: the Library is only ever taken out and unmapped behind its
@@ -148,7 +152,24 @@ impl LibraryLease {
             adapters: Mutex::new(Vec::new()),
             fibers: Mutex::new(Vec::new()),
             path,
+            remove_on_close: AtomicBool::new(false),
         })
+    }
+
+    /// Delete the mapped file when the lease closes.
+    ///
+    /// Set by ephemeral materialized loads: the copy exists only for the
+    /// lifetime of the mapping.
+    pub(crate) fn mark_remove_on_close(&self) {
+        self.remove_on_close.store(true, Ordering::Relaxed);
+    }
+
+    /// Best effort: a copy still mapped elsewhere, or one the platform
+    /// keeps locked, stays for `Loader::prune_materialized`.
+    fn remove_copy(&self) {
+        if self.remove_on_close.load(Ordering::Relaxed) {
+            let _ = std::fs::remove_file(&self.path);
+        }
     }
 
     /// The artifact path this lease was loaded from.
@@ -241,9 +262,15 @@ impl LibraryLease {
             None => Ok(()),
             // On failure the gate stays closed (fail-closed): the mapping
             // degrades to keep-mapped and every later entry is refused.
-            Some(library) => library
-                .close()
-                .map_err(|error| UnloadError::System(error.to_string())),
+            Some(library) => {
+                let result = library
+                    .close()
+                    .map_err(|error| UnloadError::System(error.to_string()));
+                if result.is_ok() {
+                    self.remove_copy();
+                }
+                result
+            }
         }
     }
 }
@@ -258,6 +285,7 @@ impl Drop for LibraryLease {
         let library = self.library.lock().unwrap().take();
         if self.gate.lock().unwrap().in_flight.is_empty() {
             drop(library);
+            self.remove_copy();
         } else {
             std::mem::forget(library);
         }
