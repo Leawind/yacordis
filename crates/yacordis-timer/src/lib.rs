@@ -47,6 +47,15 @@ pub const TIMER_SERVICE: &str = "timer";
 
 static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(1);
 
+/// Extract the message from a caught panic payload.
+fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
+    payload
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+        .unwrap_or_else(|| "non-string panic payload".to_owned())
+}
+
 thread_local! {
     /// Id of the timer callback executing on this thread, if any. A drain
     /// targeting the task running on the calling thread must skip waiting
@@ -202,18 +211,43 @@ impl TimerWheel {
                 }
                 TIMER_CURRENT.with(|cell| cell.set(Some(task.id)));
                 *task.inflight.lock().unwrap() = true;
-                {
-                    let mut guard = task.callback.lock().unwrap();
-                    if let Some(callback) = guard.as_mut() {
-                        callback();
+                // User code runs with no framework lock held: a callback
+                // that panics must not poison the callback slot, and a
+                // callback that unloads its own fiber must not deadlock
+                // against `drain`. Panics are contained here — an escaped
+                // one would kill the wheel thread and silence every timer.
+                let mut callback = task.callback.lock().unwrap().take();
+                let mut panicked = false;
+                if let Some(callback) = callback.as_mut() {
+                    let caught =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(&mut *callback));
+                    if let Err(payload) = caught {
+                        panicked = true;
+                        eprintln!(
+                            "[yacordis-timer] timer callback panicked: {}",
+                            panic_message(&payload)
+                        );
                     }
                 }
+                if panicked {
+                    // A broken callback would re-panic on every tick: stop
+                    // the timer instead of repeating the same failure.
+                    task.cancelled.store(true, Ordering::SeqCst);
+                }
+                // Interval timers keep their callback for the next tick;
+                // one-shot timers hand it to the `done` waiter below.
+                if task.interval.is_some() && !panicked {
+                    *task.callback.lock().unwrap() = callback;
+                }
+                // Unconditional: a stuck in-flight flag would block the
+                // unload drain forever.
                 *task.inflight.lock().unwrap() = false;
                 task.inflight_signal.notify_all();
                 TIMER_CURRENT.with(|cell| cell.set(None));
                 if task.interval.is_none() {
-                    // One-shot: release the callback and wake any sleeper.
-                    task.callback.lock().unwrap().take();
+                    // One-shot: wake any sleeper. The callback itself was
+                    // already consumed above, so its resources are released
+                    // with this iteration's `callback`.
                     if let Some(sender) = task.done.lock().unwrap().take() {
                         let _ = sender.send(());
                     }
@@ -410,16 +444,19 @@ impl TimerContextExt for Context {
             inflight: Mutex::new(false),
             inflight_signal: Condvar::new(),
         });
-        wheel.schedule(delay, task.clone());
         // Tie the sleep to this fiber as an effect: unloading the fiber
         // cancels the task, dropping the sender, which wakes the blocked
-        // thread with [`SleepOutcome::Cancelled`].
+        // thread with [`SleepOutcome::Cancelled`]. Same discipline as the
+        // other two forms: effect first, schedule after, so a failing
+        // registration leaves nothing pending on the wheel.
+        let effect_task = task.clone();
         self.effect("timer/sleep", move |_| {
-            let task = task.clone();
-            let disposer: Disposer = Box::new(move || task.cancel());
+            let effect_task = effect_task.clone();
+            let disposer: Disposer = Box::new(move || effect_task.cancel());
             Ok(Some(disposer))
         })
         .map_err(|e| e.to_string())?;
+        wheel.schedule(delay, task.clone());
         let outcome = receiver
             .recv()
             .map(|_| SleepOutcome::Elapsed)

@@ -305,3 +305,59 @@ fn unload_waits_for_an_inflight_callback_before_rollback() {
     );
     timer_fiber.dispose();
 }
+
+#[test]
+fn a_panicking_callback_neither_kills_the_wheel_nor_wedges_unload() {
+    let (ctx, timer_fiber) = install_timer();
+    let (entered_tx, entered_rx) = mpsc::channel::<()>();
+
+    let victim = ctx
+        .component(
+            move |ctx: &Context, _: &Value| -> ComponentResult {
+                let entered = entered_tx.clone();
+                ctx.set_timeout(Duration::from_millis(10), move || {
+                    let _ = entered.send(());
+                    panic!("timer callback boom");
+                })
+                .map_err(ComponentError::new)?;
+                Ok(())
+            },
+            json!(null),
+        )
+        .expect("install victim");
+
+    assert_eq!(
+        entered_rx.recv_timeout(Duration::from_secs(2)),
+        Ok(()),
+        "the panicking callback should have run"
+    );
+    // Let the unwind finish before unloading: the regression was that a
+    // panicked callback left both its mutex poisoned and the in-flight
+    // flag set.
+    std::thread::sleep(Duration::from_millis(50));
+
+    // The wheel thread survived: timers registered afterwards still fire.
+    let (tx, rx) = mpsc::channel::<()>();
+    ctx.set_timeout(Duration::from_millis(20), move || {
+        let _ = tx.send(());
+    })
+    .expect("schedule after the panic");
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(2)),
+        Ok(()),
+        "the wheel thread died with the panicking callback"
+    );
+
+    // Unloading the fiber that owned the panic must not hang on a stuck
+    // in-flight flag.
+    let (done_tx, done_rx) = mpsc::channel::<bool>();
+    std::thread::spawn(move || {
+        let _ = done_tx.send(victim.dispose());
+    });
+    assert_eq!(
+        done_rx.recv_timeout(Duration::from_secs(5)),
+        Ok(true),
+        "dispose hung on a panicked callback"
+    );
+    timer_fiber.dispose();
+}
