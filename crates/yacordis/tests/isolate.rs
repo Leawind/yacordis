@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 use yacordis::prelude::*;
@@ -146,4 +146,82 @@ fn isolation_composes_with_the_ffi_channel() {
     assert!(isolated.get_raw("database").is_some());
     assert!(ctx.get_raw("database").is_none(), "root sees nothing");
     handle.dispose();
+}
+
+#[test]
+fn service_events_stay_in_their_isolation_group() {
+    let ctx = Context::new();
+    ctx.set_logger(Arc::new(yacordis::DiscardLogger));
+
+    let seen_from_shared: Arc<Mutex<Vec<String>>> = Arc::default();
+    let seen_for_listener = seen_from_shared.clone();
+    ctx.on("internal/service", move |_, args| {
+        seen_for_listener
+            .lock()
+            .unwrap()
+            .push(args[0].as_str().unwrap_or("?").to_owned());
+        None
+    })
+    .expect("shared observer");
+
+    // An observer inside an isolated group.
+    let isolated = ctx.isolate("database");
+    let seen_from_group: Arc<Mutex<Vec<String>>> = Arc::default();
+    let seen_for_observer = seen_from_group.clone();
+    isolated
+        .component(
+            move |ctx: &Context, _: &Value| -> ComponentResult {
+                let seen = seen_for_observer.clone();
+                ctx.on("internal/service", move |_, args| {
+                    seen.lock()
+                        .unwrap()
+                        .push(args[0].as_str().unwrap_or("?").to_owned());
+                    None
+                })?;
+                Ok(())
+            },
+            json!(null),
+        )
+        .expect("group observer");
+
+    // A provide inside the isolated group: the shared observer must not
+    // see it, the group's own observer must.
+    let local_db = isolated
+        .component_dyn(provider("local"), json!(null))
+        .expect("local db");
+    assert!(local_db.is_active());
+    assert!(
+        !seen_from_shared
+            .lock()
+            .unwrap()
+            .contains(&"database".to_owned()),
+        "isolated service events do not cross the group boundary"
+    );
+    assert!(
+        seen_from_group.lock().unwrap().contains(&"database".to_owned()),
+        "the group's own observer sees the event"
+    );
+
+    // A shared-group service reaches both observers (the group's map only
+    // isolates the name it was derived for).
+    seen_from_shared.lock().unwrap().clear();
+    seen_from_group.lock().unwrap().clear();
+    ctx.component_dyn(
+        Arc::new(
+            |ctx: &Context, _: &Value| -> ComponentResult {
+                ctx.provide("other", Arc::new(json!({})))?;
+                Ok(())
+            },
+        ),
+        json!(null),
+    )
+    .expect("shared provider");
+    assert!(
+        seen_from_shared.lock().unwrap().contains(&"other".to_owned()),
+        "shared observers see shared-group events"
+    );
+    assert!(
+        seen_from_group.lock().unwrap().contains(&"other".to_owned()),
+        "a group observer with no isolation for that name sees shared events"
+    );
 }

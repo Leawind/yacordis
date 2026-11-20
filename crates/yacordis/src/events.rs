@@ -40,6 +40,11 @@ pub(crate) struct Hook {
     /// flipped by [`remove_hook`] so active dispatches skip removals.
     pub live: Arc<AtomicBool>,
     pub listener: Listener,
+    /// The isolation map of the context that registered the listener.
+    /// `internal/service` dispatches compare it against the touched
+    /// service's label, so service events stay inside their isolation
+    /// group (upstream filters them the same way).
+    pub isolate: Arc<crate::context::IsolateMap>,
 }
 
 pub(crate) struct MiddlewareEntry {
@@ -215,6 +220,7 @@ fn register_hook(
             id,
             listener: guarded,
             live,
+            isolate: fiber.ctx().isolate.clone(),
         };
         if prepend {
             list.insert(0, hook);
@@ -349,9 +355,32 @@ pub(crate) fn emit_status(core: &Arc<Core>, fiber: &Fiber, old: crate::fiber::Fi
     );
 }
 
-pub(crate) fn emit_service(core: &Arc<Core>, name: &str, value: Option<Value>) {
+/// Announce a service change on `internal/service`. Only listeners whose
+/// registering context shares the touched service's isolation group
+/// observe the event — the same per-group visibility as resolution
+/// itself (upstream dispatches with an equivalent filter).
+pub(crate) fn emit_service(
+    core: &Arc<Core>,
+    name: &str,
+    label: &crate::context::IsolateLabel,
+    value: Option<Value>,
+) {
+    let listeners: Vec<Listener> = {
+        let hooks = core.hooks.lock().unwrap();
+        hooks
+            .get(INTERNAL_SERVICE)
+            .map(|list| {
+                list.iter()
+                    .filter(|hook| hook.isolate.label(name) == *label)
+                    .map(|hook| hook.listener.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
     let ctx = root_ctx(core);
-    emit(core, &ctx, INTERNAL_SERVICE, &json!([name, value]));
+    for listener in &listeners {
+        call(core, "yacordis/events", listener, &ctx, &json!([name, value]));
+    }
 }
 
 // ---------------------------------------------------------------------

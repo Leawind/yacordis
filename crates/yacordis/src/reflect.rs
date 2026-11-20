@@ -348,7 +348,7 @@ pub(crate) fn notify(core: &Arc<Core>, touched: &[(String, IsolateLabel)]) {
             .map(|impl_| impl_.get_value())
             .and_then(|v| v.downcast::<serde_json::Value>().ok())
             .map(|boxed| (*boxed).clone());
-        events::emit_service(core, name, value);
+        events::emit_service(core, name, label, value);
     }
 
     // Service availability changed: pending fibers may now form (or
