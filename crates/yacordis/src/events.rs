@@ -80,7 +80,7 @@ fn call(
     match result {
         Ok(value) => value,
         Err(payload) => {
-            let message = panic_message(&payload);
+            let message = crate::effect::panic_message(&payload);
             core.logger.log(
                 crate::logger::LogLevel::Error,
                 target,
@@ -89,14 +89,6 @@ fn call(
             None
         }
     }
-}
-
-fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
-    payload
-        .downcast_ref::<String>()
-        .cloned()
-        .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
-        .unwrap_or_else(|| "non-string panic payload".to_owned())
 }
 
 /// Snapshot-and-call dispatch. Non-internal events are announced to

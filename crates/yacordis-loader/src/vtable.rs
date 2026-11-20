@@ -16,7 +16,7 @@ use yacordis_component_api::{ABI_VERSION, Callback, HostVTable, RawBuffer, log_l
 
 use crate::adapter::{Invocation, SendCallback};
 use crate::handles::{HandleTable, HostObject};
-use yacordis::{CancellationToken, Context, EffectOutcome, LogLevel};
+use yacordis::{CancellationToken, EffectOutcome, LogLevel};
 
 pub(crate) fn handles() -> &'static HandleTable {
     HandleTable::global()
@@ -416,9 +416,3 @@ pub(crate) static HOST_VTABLE: HostVTable = HostVTable {
     work_cancelled: v_work_cancelled,
     work_cancel: v_work_cancel,
 };
-
-// Context is referenced in doc comments and the adapter lives beside us.
-#[allow(unused)]
-fn _context_type_used() -> Option<Context> {
-    None
-}

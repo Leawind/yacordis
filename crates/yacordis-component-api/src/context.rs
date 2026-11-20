@@ -1,8 +1,6 @@
 //! The component-side context: a thin, `Copy` wrapper over a host handle
 //! that forwards every operation through the host vtable.
 
-use std::os::raw::c_void;
-
 use serde_json::{Value, json};
 
 use crate::abi::{Callback, HostVTable, RawBuffer, log_level};
@@ -347,10 +345,4 @@ pub(crate) fn build_manifest(name: Option<&str>, inject: &Inject) -> RawBuffer {
         "abi": crate::ABI_VERSION,
     });
     buffer::buffer_from_vec(serde_json::to_vec(&doc).unwrap_or_default())
-}
-
-// Keep c_void import used even if layout tweaks remove direct uses.
-#[allow(unused)]
-fn _assert_c_void() -> Option<c_void> {
-    None
 }

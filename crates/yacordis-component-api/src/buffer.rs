@@ -64,7 +64,6 @@ pub fn buffer_into_vec(buffer: RawBuffer) -> Vec<u8> {
 
 /// Read a boundary buffer as UTF-8, replacing invalid sequences.
 #[must_use]
-#[allow(dead_code)] // convenience for hosts and components
 pub fn buffer_to_string(buffer: RawBuffer) -> String {
     String::from_utf8_lossy(&buffer_into_vec(buffer)).into_owned()
 }

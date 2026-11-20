@@ -77,8 +77,11 @@ pub(crate) fn provide(
 }
 
 fn withdraw(core: &Arc<Core>, fiber: &Weak<Fiber>, impl_: &Arc<ServiceImpl>) {
-    let Some(fiber) = fiber.upgrade() else { return };
-    let _ = &fiber;
+    // A withdrawn provider whose fiber is already gone has nothing left
+    // to withdraw: its store entry and notification both die with it.
+    if fiber.upgrade().is_none() {
+        return;
+    }
     {
         let mut store = core.store.lock().unwrap();
         let key = ServiceKey {
