@@ -1,9 +1,9 @@
-name: CI
+name: Checks
 
 on:
-  push:
-    branches: [main]
   pull_request:
+  workflow_dispatch:
+  workflow_call:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -25,24 +25,13 @@ jobs:
       - run: npm install --global dprint
       - run: dprint check
 
-  linux:
-    name: clippy + test (linux)
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-      - uses: Swatinem/rust-cache@v2
-      # Without ast-grep the loader's lint contract tests silently skip.
-      - run: npm install --global @ast-grep/cli
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo test --workspace --locked
-
-  windows:
-    name: clippy + test (windows)
-    runs-on: windows-latest
+  test:
+    name: clippy + test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ github.event_name == 'pull_request' && fromJSON('["ubuntu-latest"]') || fromJSON('["ubuntu-latest", "ubuntu-24.04-arm", "windows-latest", "windows-11-arm", "macos-latest", "macos-15-intel"]') }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -50,6 +39,7 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+      # Without ast-grep the loader's lint contract tests silently skip.
       - run: npm install --global @ast-grep/cli
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
