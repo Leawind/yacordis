@@ -583,14 +583,27 @@ impl Context {
     /// isolation groups (labels are not part of the summary; compare by
     /// owner instead).
     pub fn provided_services(&self) -> Vec<ServiceSummary> {
-        let store = self.core.store.lock().unwrap();
-        store
-            .values()
-            .map(|impl_| ServiceSummary {
-                name: impl_.name.clone(),
-                owner: impl_.owner_name.clone(),
-                active: impl_
-                    .owner
+        // Snapshot under the store lock, then read fiber states without
+        // it — the store lock is never held while taking a fiber lock.
+        let entries: Vec<(String, String, Weak<Fiber>)> = {
+            let store = self.core.store.lock().unwrap();
+            store
+                .values()
+                .map(|impl_| {
+                    (
+                        impl_.name.clone(),
+                        impl_.owner_name.clone(),
+                        impl_.owner.clone(),
+                    )
+                })
+                .collect()
+        };
+        entries
+            .into_iter()
+            .map(|(name, owner, weak)| ServiceSummary {
+                name,
+                owner,
+                active: weak
                     .upgrade()
                     .map(|fiber| fiber.state() == FiberState::Active)
                     .unwrap_or(false),

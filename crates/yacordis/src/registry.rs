@@ -154,21 +154,21 @@ pub(crate) fn remove_fiber(core: &Arc<Core>, fiber: &Arc<Fiber>) {
         Some(runtime) => runtime,
         None => return,
     };
-    {
-        let mut fibers = runtime.fibers.lock().unwrap();
-        fibers.retain(|f| !Arc::ptr_eq(f, fiber));
-        if !fibers.is_empty() {
-            let mut registry = core.registry.lock().unwrap();
-            registry.unregister_fiber(fiber);
-            return;
-        }
-    }
+    // Lock discipline: registry before per-runtime fiber lists — the same
+    // order as the introspection paths, never the reverse.
     let mut registry = core.registry.lock().unwrap();
     registry.unregister_fiber(fiber);
-    // Re-check under the registry lock: a concurrent install may have
-    // added a fiber to this runtime in the meantime.
-    if runtime.fibers.lock().unwrap().is_empty() {
-        registry.remove(runtime.key);
+    let now_empty = {
+        let mut fibers = runtime.fibers.lock().unwrap();
+        fibers.retain(|f| !Arc::ptr_eq(f, fiber));
+        fibers.is_empty()
+    };
+    if now_empty {
+        // Re-check under the registry lock: a concurrent install may have
+        // added a fiber to this runtime in the meantime.
+        if runtime.fibers.lock().unwrap().is_empty() {
+            registry.remove(runtime.key);
+        }
     }
 }
 
