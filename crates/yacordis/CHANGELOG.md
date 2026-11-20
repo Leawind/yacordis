@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/Leawind/yacordis/compare/yacordis-v0.2.0...yacordis-v0.2.1) - 2026-11-20
+
+### Other
+
+- updated the following local packages: yacordis-macros
+
 ## [0.2.0] - 2026-11-20
 
 ### Added
