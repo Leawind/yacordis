@@ -158,8 +158,10 @@ impl LibraryLease {
 
     /// Delete the mapped file when the lease closes.
     ///
-    /// Set by ephemeral materialized loads: the copy exists only for the
-    /// lifetime of the mapping.
+    /// Set by ephemeral materialized loads on Windows, where a mapped
+    /// image cannot be deleted; other platforms unlink the copy as soon as
+    /// it is mapped and never need this.
+    #[cfg(windows)]
     pub(crate) fn mark_remove_on_close(&self) {
         self.remove_on_close.store(true, Ordering::Relaxed);
     }
