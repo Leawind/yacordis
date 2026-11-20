@@ -4,7 +4,6 @@ members = [
   "crates/yacordis",
   "crates/yacordis-component-api",
   "crates/yacordis-loader",
-  "crates/yacordis-logger",
   "crates/yacordis-macros",
   "crates/yacordis-timer",
 ]

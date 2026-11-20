@@ -153,7 +153,10 @@ pub use effect::{Disposer, EffectHandle, EffectOutcome};
 pub use error::{ComponentError, ComponentResult, CordisError};
 pub use events::Event;
 pub use fiber::FiberState;
-pub use logger::{DiscardLogger, LogLevel, Logger, StderrLogger};
+pub use logger::{
+    DiscardLogger, LOGGER_SERVICE, LogLevel, LogRecord, LogSink, Logger, LoggerComponent,
+    LoggerContextExt, LoggerService, MemorySink, SinkHandle, StderrLogger, StderrSink,
+};
 pub use schema::{Diagnostic, Schema, SchemaBuilder};
 pub use serde_json;
 pub use work::{CancellationToken, WorkHandle, WorkOutcome};
@@ -218,7 +221,9 @@ pub mod prelude {
     pub use crate::events::Event;
     pub use crate::executing_lifecycle_op;
     pub use crate::fiber::FiberState;
-    pub use crate::logger::{DiscardLogger, LogLevel, Logger, StderrLogger};
+    pub use crate::logger::{
+        DiscardLogger, LogLevel, Logger, LoggerComponent, LoggerContextExt, StderrLogger,
+    };
     pub use crate::quiesce;
     pub use crate::schema::{Diagnostic, Schema, SchemaBuilder};
     pub use crate::serde_json;

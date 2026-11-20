@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use serde_json::{Value, json};
+use yacordis::MemorySink;
 use yacordis::prelude::*;
-use yacordis_logger::{LogLevel, LoggerComponent, LoggerContextExt, MemorySink};
 
 #[test]
 fn records_flow_to_sinks_with_component_scopes() {
@@ -119,7 +119,6 @@ fn scoped_sink_is_removed_with_its_fiber() {
     ctx.set_logger(Arc::new(yacordis::DiscardLogger));
     ctx.component(LoggerComponent, json!(null))
         .expect("install logger");
-    let service = ctx.logger().expect("logger service");
 
     let memory = Arc::new(MemorySink::new());
     let memory_for_body = memory.clone();

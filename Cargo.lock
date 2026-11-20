@@ -629,14 +629,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "yacordis-logger"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "yacordis",
-]
-
-[[package]]
 name = "yacordis-macros"
 version = "0.1.0"
 dependencies = [
