@@ -625,13 +625,18 @@ impl Context {
         self.core.quiesce();
     }
 
-    /// Dispose every installed component fiber (root effects survive; this is
-    /// a teardown helper for hosts and tests).
+    /// Dispose every installed component fiber in reverse installation
+    /// order (root effects survive; this is a teardown helper for hosts
+    /// and tests).
     pub fn dispose_all(&self) {
-        let fibers: Vec<Arc<Fiber>> = {
+        let mut fibers: Vec<Arc<Fiber>> = {
             let registry = self.core.registry.lock().unwrap();
             registry.all_fibers()
         };
+        // Later installations revert first — the global counterpart of the
+        // per-fiber reverse-registration discipline. Fiber ids are handed
+        // out in installation order.
+        fibers.sort_by_key(|fiber| std::cmp::Reverse(fiber.id));
         for fiber in fibers {
             fiber.dispose(&self.core);
         }

@@ -725,3 +725,82 @@ fn disposal_is_reverse_registration_across_effect_batches() {
         "global reverse-registration disposal order across batches"
     );
 }
+
+#[test]
+fn required_dependency_gates_on_provider_activation() {
+    let ctx = Context::new();
+    ctx.set_logger(Arc::new(DiscardLogger));
+
+    // Observations from the child body: one entry per body run, `true`
+    // when the required service resolved.
+    let runs: Arc<Mutex<Vec<bool>>> = Arc::default();
+    let child_state_at_install: Arc<Mutex<Option<FiberState>>> = Arc::default();
+
+    let runs_for_body = runs.clone();
+    let child_state = child_state_at_install.clone();
+    let parent = ctx
+        .component(
+            move |ctx: &Context, _: &Value| -> ComponentResult {
+                ctx.provide("svc", Arc::new(json!({ "v": 1 })))?;
+                // The provider is mid-body (still Pending): a required
+                // dependency must not count as satisfied yet.
+                let runs_inner = runs_for_body.clone();
+                let child = ctx.inject(Inject::required(&["svc"]), move |ctx| {
+                    runs_inner
+                        .lock()
+                        .unwrap()
+                        .push(ctx.get::<Value>("svc").is_some());
+                    Ok(())
+                })?;
+                *child_state.lock().unwrap() = Some(child.state());
+                Ok(())
+            },
+            json!(null),
+        )
+        .expect("install parent");
+
+    assert!(parent.is_active());
+    assert_eq!(
+        *child_state_at_install.lock().unwrap(),
+        Some(FiberState::Pending),
+        "a mid-body provider does not satisfy required injects"
+    );
+    // The child ran exactly once — after the provider activated — and its
+    // required dependency resolved there.
+    assert_eq!(
+        *runs.lock().unwrap(),
+        vec![true],
+        "child body runs only on provider activation, with the service resolvable"
+    );
+}
+
+#[test]
+fn dispose_all_reverts_in_reverse_installation_order() {
+    let ctx = Context::new();
+    ctx.set_logger(Arc::new(DiscardLogger));
+    let log: Log = Arc::default();
+
+    let make = |tag: &'static str| -> Arc<dyn Component> {
+        let log = log.clone();
+        Arc::new(move |ctx: &Context, _: &Value| -> ComponentResult {
+            let log = log.clone();
+            ctx.effect(tag, move |_| {
+                Ok(Some(dispose_log(&log, tag)))
+            })?;
+            Ok(())
+        })
+    };
+
+    let first = ctx.component_dyn(make("first"), json!(null)).expect("first");
+    let second = ctx
+        .component_dyn(make("second"), json!(null))
+        .expect("second");
+    assert!(first.is_active() && second.is_active());
+
+    ctx.dispose_all();
+    assert_eq!(
+        logged(&log),
+        ["second", "first"],
+        "later installations revert first across fibers"
+    );
+}

@@ -387,26 +387,42 @@ impl Fiber {
     }
 
     /// Re-read the given services (within this fiber's isolation group)
-    /// from the global store into `dep_store`. Returns true if any
-    /// relevant entry changed.
+    /// from the global store into `dep_store`. An entry counts as
+    /// available under the same predicate as resolution: present in the
+    /// store, and its provider active — or the requesting fiber itself
+    /// (its own mid-body provides). Returns true if any relevant entry
+    /// changed.
     pub(crate) fn check_impls(&self, core: &Arc<Core>, names: &[String]) -> bool {
         let inject: Vec<String> = self.inject_names().iter().map(|(n, _)| n.clone()).collect();
-        let mut changed = false;
-        let mut inner = self.inner.lock().unwrap();
+        // Snapshot availability under the store lock alone; the fiber lock
+        // is taken afterwards to apply the result (never nested with the
+        // store lock).
+        let mut fresh: Vec<(String, Option<Arc<ServiceImpl>>)> = Vec::new();
         for name in names {
             if !inject.iter().any(|n| n == name) {
                 continue;
             }
             let label = self.ctx().isolate_label(name);
-            let fresh = core.store_impl(name, &label);
-            match (inner.dep_store.get(name), fresh) {
+            let impl_ = core.store_impl(name, &label).filter(|impl_| {
+                impl_
+                    .owner
+                    .upgrade()
+                    .map(|owner| owner.state() == FiberState::Active || owner.id == self.id)
+                    .unwrap_or(false)
+            });
+            fresh.push((name.clone(), impl_));
+        }
+        let mut changed = false;
+        let mut inner = self.inner.lock().unwrap();
+        for (name, impl_) in fresh {
+            match (inner.dep_store.get(&name), impl_) {
                 (Some(old), Some(new)) if Arc::ptr_eq(old, &new) => {}
                 (_, Some(new)) => {
-                    inner.dep_store.insert(name.clone(), new);
+                    inner.dep_store.insert(name, new);
                     changed = true;
                 }
                 (Some(_), None) => {
-                    inner.dep_store.remove(name);
+                    inner.dep_store.remove(&name);
                     changed = true;
                 }
                 (None, None) => {}
