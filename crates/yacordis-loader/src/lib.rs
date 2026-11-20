@@ -38,10 +38,17 @@
 //! Components unload for real. [`ComponentLibrary::unload`] unmaps the
 //! binary once the host has proven a quiet state — every fiber disposed,
 //! no component code in flight — and on Windows that releases the file
-//! lock, so the artifact can be rebuilt and reloaded in place. When the
-//! proof fails, the unload is refused with the violation named (an
-//! [`UnloadError`]) and the library stays mapped: a contract violation
-//! degrades at worst to a memory leak, never to a crash.
+//! lock. When the proof fails, the unload is refused with the violation
+//! named (an [`UnloadError`]) and the library stays mapped: a contract
+//! violation degrades at worst to a memory leak, never to a crash.
+//!
+//! A host that rebuilds an artifact before unloading it loads a
+//! materialized copy ([`Loader::load_materialized`]) instead of mapping the
+//! artifact in place: the mapped file is then a content-addressed copy, so
+//! the producer's path stays writable while the previous copy is still
+//! mapped, and a rebuild cannot truncate the bytes under an existing
+//! mapping on Unix. In-place loading remains right for prebuilt binaries
+//! that never change under the process.
 //!
 //! The proof is the component author's responsibility to make possible.
 //! The contract's invariants, in code terms:
@@ -83,7 +90,8 @@ mod vtable;
 
 pub use lease::UnloadError;
 pub use loader::{
-    BuildOptions, ComponentLibrary, ComponentManifest, LoadError, Loader, lint_source,
+    BuildOptions, ComponentLibrary, ComponentManifest, LoadError, Loader, MaterializedArtifact,
+    lint_source,
 };
 pub use registry::{
     Constraint, Entry, RegistryError, RegistryIndex, Repository, Sha256Verifier, Verifier, Version,

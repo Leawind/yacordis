@@ -1,7 +1,10 @@
 //! Loading prebuilt cdylib components and adapting them into the core.
 
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use libloading::Library;
 use serde_json::Value;
@@ -13,6 +16,7 @@ use crate::lease::{LibraryLease, UnloadError};
 
 /// Why a component could not be installed.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum LoadError {
     /// The file could not be opened as a shared library.
     Library(libloading::Error),
@@ -29,6 +33,8 @@ pub enum LoadError {
     Build(String),
     /// Fetching from a URL failed.
     Fetch(String),
+    /// Copying the artifact into the materialization cache failed.
+    Materialize(std::io::Error),
 }
 
 impl std::fmt::Display for LoadError {
@@ -47,6 +53,9 @@ impl std::fmt::Display for LoadError {
                 write!(f, "cargo build failed:\n{stderr}")
             }
             LoadError::Fetch(why) => write!(f, "download failed: {why}"),
+            LoadError::Materialize(e) => {
+                write!(f, "cannot materialize the component artifact: {e}")
+            }
         }
     }
 }
@@ -55,6 +64,7 @@ impl std::error::Error for LoadError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             LoadError::Library(e) | LoadError::Symbol(_, e) => Some(e),
+            LoadError::Materialize(e) => Some(e),
             _ => None,
         }
     }
@@ -71,6 +81,40 @@ pub struct ComponentManifest {
     pub optional: Vec<String>,
 }
 
+/// A content-addressed copy of a component artifact.
+///
+/// The copy lives at `<cache>/<sha256>.<ext>`, where `<ext>` is the
+/// platform's shared-library extension, and is what a materialized load
+/// maps. It is written through a temporary file renamed into place, and
+/// identical content reuses the existing copy.
+#[derive(Debug, Clone)]
+pub struct MaterializedArtifact {
+    source: Option<PathBuf>,
+    path: PathBuf,
+    digest: String,
+}
+
+impl MaterializedArtifact {
+    /// The artifact the copy was made from; `None` for
+    /// [`Loader::load_bytes`].
+    #[must_use]
+    pub fn source_path(&self) -> Option<&Path> {
+        self.source.as_deref()
+    }
+
+    /// The cached copy to map.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Lowercase hex sha-256 of the artifact bytes.
+    #[must_use]
+    pub fn digest(&self) -> &str {
+        &self.digest
+    }
+}
+
 /// One dynamically loaded component binary.
 ///
 /// The library stays mapped while it can still run component code: every
@@ -83,6 +127,10 @@ pub struct ComponentLibrary {
     /// Parsed from the component's exported manifest.
     pub manifest: ComponentManifest,
     adapter: Arc<FfiComponent>,
+    /// Set when the library was loaded from a materialized copy.
+    digest: Option<String>,
+    /// The producer's artifact path for a materialized load.
+    source: Option<PathBuf>,
 }
 
 // SAFETY: the component ABI contract requires closures and state to be
@@ -151,6 +199,8 @@ impl ComponentLibrary {
             lease,
             manifest: parsed,
             adapter,
+            digest: None,
+            source: None,
         })
     }
 
@@ -240,9 +290,29 @@ impl ComponentLibrary {
     }
 
     /// The file this library was loaded from (for diagnostics).
+    ///
+    /// For a materialized load this is the cached copy, not the producer's
+    /// artifact; [`ComponentLibrary::source_path`] keeps the latter.
     #[must_use]
     pub fn path(&self) -> &Path {
         self.lease.path()
+    }
+
+    /// The sha-256 digest of the artifact, for a materialized load.
+    ///
+    /// In-place loads ([`Loader::load_file`]) return `None`.
+    #[must_use]
+    pub fn digest(&self) -> Option<&str> {
+        self.digest.as_deref()
+    }
+
+    /// The producer's artifact path, for a materialized load.
+    ///
+    /// `None` for in-place loads and for [`Loader::load_bytes`], which has
+    /// no source file.
+    #[must_use]
+    pub fn source_path(&self) -> Option<&Path> {
+        self.source.as_deref()
     }
 }
 
@@ -379,11 +449,107 @@ pub fn lint_source(source_dir: impl AsRef<Path>) -> Result<(), String> {
 }
 
 impl Loader {
-    /// Load a prebuilt cdylib component. See [`ComponentLibrary::load`] for
-    /// the trust model.
+    /// Load a prebuilt cdylib component in place. See
+    /// [`ComponentLibrary::load`] for the trust model.
+    ///
+    /// The artifact path is the mapped file: rebuilding it is only possible
+    /// after [`ComponentLibrary::unload`]. A host that rebuilds before
+    /// unloading loads a materialized copy instead
+    /// ([`Loader::load_materialized`]).
     pub fn load_file(path: impl AsRef<Path>) -> Result<ComponentLibrary, LoadError> {
         // SAFETY: delegated to the caller's choice of component binary.
         unsafe { ComponentLibrary::load(path.as_ref()) }
+    }
+
+    /// Copy `source` into `cache_dir` under its sha-256 digest.
+    ///
+    /// The copy is named by its digest with the platform's shared-library
+    /// extension; identical content reuses the existing copy. A new copy is
+    /// written to a temporary file and renamed into place, so a crash or a
+    /// concurrent materialize never exposes a partial artifact.
+    ///
+    /// Components loaded from a copy must be self-contained: a relative
+    /// loader search path (`$ORIGIN`, `@loader_path`) resolves next to the
+    /// copy, not next to the producer's artifact.
+    pub fn materialize(
+        source: impl AsRef<Path>,
+        cache_dir: impl AsRef<Path>,
+    ) -> Result<MaterializedArtifact, LoadError> {
+        let source = source.as_ref();
+        let cache_dir = cache_dir.as_ref();
+        std::fs::create_dir_all(cache_dir).map_err(LoadError::Materialize)?;
+        let temp = temp_path(cache_dir);
+        let digest = copy_with_digest(source, &temp)?;
+        let path = cache_path(cache_dir, &digest);
+        publish(&temp, &path)?;
+        Ok(MaterializedArtifact {
+            source: Some(source.to_path_buf()),
+            path,
+            digest,
+        })
+    }
+
+    /// Materialize `source` and map the copy.
+    ///
+    /// Use this when the artifact may be rebuilt while a previous copy is
+    /// still mapped: the producer's path is never mapped, so the rebuild
+    /// cannot hit the Windows image lock, and cannot truncate the bytes
+    /// under an existing mapping on Unix. Fibers of the old copy keep
+    /// serving until they are disposed.
+    pub fn load_materialized(
+        source: impl AsRef<Path>,
+        cache_dir: impl AsRef<Path>,
+    ) -> Result<ComponentLibrary, LoadError> {
+        load_artifact(Self::materialize(source, cache_dir)?)
+    }
+
+    /// Materialize an in-memory component binary and map the copy.
+    ///
+    /// This is the embedded-artifact path; identical bytes reuse the same
+    /// cached copy.
+    pub fn load_bytes(
+        bytes: impl AsRef<[u8]>,
+        cache_dir: impl AsRef<Path>,
+    ) -> Result<ComponentLibrary, LoadError> {
+        load_artifact(materialize_bytes(bytes.as_ref(), cache_dir.as_ref())?)
+    }
+
+    /// Delete cached copies whose digest is not in `keep`.
+    ///
+    /// Only digest-named files are candidates; foreign files and in-progress
+    /// temporary files are left alone. Deletion is best effort: a copy still
+    /// mapped by a live process cannot be removed on Windows, so it stays.
+    /// Digests are the lowercase hex strings from
+    /// [`MaterializedArtifact::digest`] and [`ComponentLibrary::digest`].
+    pub fn prune_materialized(cache_dir: impl AsRef<Path>, keep: &[&str]) -> std::io::Result<()> {
+        let cache_dir = cache_dir.as_ref();
+        let entries = match std::fs::read_dir(cache_dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if !file_type.is_file() {
+                continue;
+            }
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            let Some((stem, _extension)) = name.split_once('.') else {
+                continue;
+            };
+            let is_digest = stem.len() == 64 && stem.bytes().all(|byte| byte.is_ascii_hexdigit());
+            if !is_digest || keep.contains(&stem) {
+                continue;
+            }
+            // Best effort: a mapped copy on Windows refuses deletion.
+            let _ = std::fs::remove_file(entry.path());
+        }
+        Ok(())
     }
 
     /// Build a component crate from source and load the resulting cdylib.
@@ -487,6 +653,113 @@ impl Loader {
             .map_err(|e| LoadError::Fetch(format!("download interrupted: {e}")))?;
         Ok(path)
     }
+}
+
+fn load_artifact(artifact: MaterializedArtifact) -> Result<ComponentLibrary, LoadError> {
+    // SAFETY: same trust model as `Loader::load_file`: the caller chose the
+    // artifact.
+    let mut library = unsafe { ComponentLibrary::load(&artifact.path)? };
+    library.digest = Some(artifact.digest);
+    library.source = artifact.source;
+    Ok(library)
+}
+
+fn materialize_bytes(bytes: &[u8], cache_dir: &Path) -> Result<MaterializedArtifact, LoadError> {
+    std::fs::create_dir_all(cache_dir).map_err(LoadError::Materialize)?;
+    let digest = crate::registry::sha256_hex(bytes);
+    let path = cache_path(cache_dir, &digest);
+    if !path.is_file() {
+        let temp = temp_path(cache_dir);
+        write_bytes(bytes, &temp)?;
+        publish(&temp, &path)?;
+    }
+    Ok(MaterializedArtifact {
+        source: None,
+        path,
+        digest,
+    })
+}
+
+fn cache_path(cache_dir: &Path, digest: &str) -> PathBuf {
+    cache_dir.join(format!("{digest}.{}", std::env::consts::DLL_EXTENSION))
+}
+
+/// Move a finished temporary file to its digest name, reusing a copy a
+/// concurrent loader published first.
+fn publish(temp: &Path, path: &Path) -> Result<(), LoadError> {
+    if path.is_file() {
+        let _ = std::fs::remove_file(temp);
+        return Ok(());
+    }
+    match std::fs::rename(temp, path) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            // Either another materialize won the race, or the existing copy
+            // is mapped and Windows refused the replacement.
+            let published = path.is_file();
+            let _ = std::fs::remove_file(temp);
+            if published {
+                Ok(())
+            } else {
+                Err(LoadError::Materialize(error))
+            }
+        }
+    }
+}
+
+/// Copy `source` to `temp`, hashing the bytes in the same pass.
+fn copy_with_digest(source: &Path, temp: &Path) -> Result<String, LoadError> {
+    let result = (|| -> std::io::Result<String> {
+        let mut input = std::fs::File::open(source)?;
+        let mut output = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(temp)?;
+        let mut hasher = crate::registry::Sha256::new();
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            let read = input.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..read]);
+            output.write_all(&buffer[..read])?;
+        }
+        output.sync_all()?;
+        Ok(hasher.finish_hex())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(temp);
+    }
+    result.map_err(LoadError::Materialize)
+}
+
+fn write_bytes(bytes: &[u8], temp: &Path) -> Result<(), LoadError> {
+    let result = (|| -> std::io::Result<()> {
+        let mut output = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(temp)?;
+        output.write_all(bytes)?;
+        output.sync_all()
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(temp);
+    }
+    result.map_err(LoadError::Materialize)
+}
+
+fn temp_path(cache_dir: &Path) -> PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or(0);
+    cache_dir.join(format!(
+        ".{}-{nanos}-{}.tmp",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ))
 }
 
 #[cfg(test)]

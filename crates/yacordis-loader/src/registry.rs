@@ -451,13 +451,86 @@ impl Repository {
 
 /// sha-256 of `bytes`, lowercase hex.
 pub fn sha256_hex(bytes: &[u8]) -> String {
-    let digest = sha256(bytes);
-    let mut out = String::with_capacity(64);
-    for byte in digest {
-        out.push(hex_digit(byte >> 4));
-        out.push(hex_digit(byte & 0x0F));
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hasher.finish_hex()
+}
+
+/// Streaming sha-256 state, so a copied artifact is hashed in the same
+/// pass that writes it, without holding the file in memory.
+pub(crate) struct Sha256 {
+    state: [u32; 8],
+    /// Bytes of the current, not yet compressed block.
+    buffer: [u8; 64],
+    filled: usize,
+    /// Total input length in bytes, for the padding trailer.
+    length: u64,
+}
+
+impl Sha256 {
+    pub(crate) fn new() -> Self {
+        Self {
+            state: [
+                0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+                0x5be0cd19,
+            ],
+            buffer: [0; 64],
+            filled: 0,
+            length: 0,
+        }
     }
-    out
+
+    pub(crate) fn update(&mut self, mut data: &[u8]) {
+        self.length = self.length.wrapping_add(data.len() as u64);
+        if self.filled > 0 {
+            let take = (64 - self.filled).min(data.len());
+            self.buffer[self.filled..self.filled + take].copy_from_slice(&data[..take]);
+            self.filled += take;
+            data = &data[take..];
+            if self.filled < 64 {
+                return;
+            }
+            compress(&mut self.state, &self.buffer);
+            self.filled = 0;
+        }
+        let mut chunks = data.chunks_exact(64);
+        for chunk in &mut chunks {
+            compress(&mut self.state, chunk.try_into().expect("64-byte chunk"));
+        }
+        let rest = chunks.remainder();
+        self.buffer[..rest.len()].copy_from_slice(rest);
+        self.filled = rest.len();
+    }
+
+    pub(crate) fn finish(mut self) -> [u8; 32] {
+        let bit_len = self.length.wrapping_mul(8);
+        // Padding: message + 0x80 + zeros + 8-byte big-endian bit length.
+        self.buffer[self.filled] = 0x80;
+        self.filled += 1;
+        if self.filled > 56 {
+            self.buffer[self.filled..].fill(0);
+            compress(&mut self.state, &self.buffer);
+            self.filled = 0;
+        }
+        self.buffer[self.filled..56].fill(0);
+        self.buffer[56..64].copy_from_slice(&bit_len.to_be_bytes());
+        compress(&mut self.state, &self.buffer);
+
+        let mut digest = [0u8; 32];
+        for (index, word) in self.state.iter().enumerate() {
+            digest[index * 4..index * 4 + 4].copy_from_slice(&word.to_be_bytes());
+        }
+        digest
+    }
+
+    pub(crate) fn finish_hex(self) -> String {
+        let mut out = String::with_capacity(64);
+        for byte in self.finish() {
+            out.push(hex_digit(byte >> 4));
+            out.push(hex_digit(byte & 0x0F));
+        }
+        out
+    }
 }
 
 fn hex_digit(nibble: u8) -> char {
@@ -480,30 +553,9 @@ const K: [u32; 64] = [
 
 /// Raw sha-256 digest (32 bytes).
 pub fn sha256(bytes: &[u8]) -> [u8; 32] {
-    let mut state: [u32; 8] = [
-        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
-        0x5be0cd19,
-    ];
-    let bit_len = (bytes.len() as u64).wrapping_mul(8);
-    // Padding: message + 0x80 + zeros + 8-byte big-endian bit length.
-    let mut message = bytes.to_vec();
-    message.push(0x80);
-    while message.len() % 64 != 56 {
-        message.push(0);
-    }
-    message.extend_from_slice(&bit_len.to_be_bytes());
-
-    let mut block = [0u8; 64];
-    for chunk in message.chunks_exact(64) {
-        block.copy_from_slice(chunk);
-        compress(&mut state, &block);
-    }
-
-    let mut digest = [0u8; 32];
-    for (index, word) in state.iter().enumerate() {
-        digest[index * 4..index * 4 + 4].copy_from_slice(&word.to_be_bytes());
-    }
-    digest
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hasher.finish()
 }
 
 fn compress(state: &mut [u32; 8], block: &[u8; 64]) {
@@ -550,5 +602,24 @@ fn compress(state: &mut [u32; 8], block: &[u8; 64]) {
     let round = [a, b, c, d, e, f, g, h];
     for (index, word) in round.iter().enumerate() {
         state[index] = state[index].wrapping_add(*word);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Sha256, sha256_hex};
+
+    #[test]
+    fn streaming_hash_matches_one_shot_across_chunk_boundaries() {
+        let data: Vec<u8> = (0..1_000u32)
+            .map(|index| (index.wrapping_mul(37) % 256) as u8)
+            .collect();
+        let expected = sha256_hex(&data);
+        for split in [0, 1, 55, 56, 63, 64, 65, 119, 128, 511, 999, 1_000] {
+            let mut hasher = Sha256::new();
+            hasher.update(&data[..split]);
+            hasher.update(&data[split..]);
+            assert_eq!(hasher.finish_hex(), expected, "split at {split}");
+        }
     }
 }
