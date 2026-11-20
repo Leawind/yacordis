@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- A fiber being disposed reports `Disposed` from the same critical section that marks it disposed, not after its teardown completes (cordis nulls the uid first, for the same reason): a direct `dispose()` — which no quiesce waits for, since it is not op-accounted — could be observed as `Active` with its dependencies already withdrawn.
 - A dropped runtime is collectable: a fiber no longer stores its `Context`, which made `Core → Fiber → Context → Core` an `Arc` cycle and leaked one runtime per `Context::new()`.
 - A disposed fiber retires its cascade entry on the parent, and effect batches drop spent entries: reinstalling a component no longer accumulates one entry per cycle.
 

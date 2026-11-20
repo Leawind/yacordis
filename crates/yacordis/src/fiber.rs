@@ -743,15 +743,26 @@ impl Fiber {
     /// withdrawal happens inside the provide-disposers, cascading to
     /// dependent fibers before we finish.
     pub(crate) fn dispose(self: &Arc<Fiber>, core: &Arc<Core>) -> bool {
-        let disposal = {
+        let (disposal, old_state) = {
             let mut inner = self.inner.lock().unwrap();
             if inner.disposed || inner.unloading {
                 return false;
             }
             inner.disposed = true;
             inner.error = None;
-            inner.disposal.take()
+            let old = inner.state;
+            inner.state = FiberState::Disposed;
+            (inner.disposal.take(), old)
         };
+        // The disposition is decided, so `state()` reads Disposed from the
+        // same critical section that sets the flag — cordis nulls the
+        // fiber's uid before running its disposal effect. A direct dispose
+        // is not op-accounted (no quiesce waits for it), so the previous
+        // late state change left a window where a disposed fiber still
+        // read Active with its dependencies already absent.
+        if old_state != FiberState::Disposed {
+            events::emit_status(core, self, old_state);
+        }
         // Retire the parent's cascade entry now: the parent would otherwise
         // hold this fiber's disposal effect until it unloads, leaking one
         // entry per install/dispose cycle. The disposer re-enters dispose,
