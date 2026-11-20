@@ -16,7 +16,8 @@ fn logged(log: &Log) -> Vec<String> {
     log.lock().unwrap().clone()
 }
 
-/// Box coercion needs the target type known (see AGENTS.md pitfalls).
+/// Box coercion to `dyn` needs the target type known: an annotated return
+/// type performs it, a bare argument position does not.
 fn boom_disposer(log: Log) -> Disposer {
     Box::new(move || {
         push(&log, "boom:dispose");

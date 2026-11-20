@@ -1,7 +1,6 @@
-//! Epoch / stale-op semantics: the regression tests behind design.md
-//! §5.3 — a queued Reload whose premise vanished must never pull a fiber
-//! back to Active. That settled-Active-without-dependency state is the
-//! observable stale-replay bug.
+//! Epoch / stale-op semantics: a queued Reload whose premise vanished
+//! must never pull a fiber back to Active. That state — active without
+//! its dependencies — is the observable stale-replay bug.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};

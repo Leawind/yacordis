@@ -22,7 +22,7 @@
 //! diagnostics (and reactive gating) see the declarations up front,
 //! before the body runs. `schema` is an arbitrary expression evaluating to
 //! [`yacordis::Schema`] — install and update then validate and resolve
-//! the config before the body runs (see design.md §6 item 4). The
+//! the config before the body runs (see `yacordis::schema`). The
 //! component struct inherits the function's visibility and its
 //! `Component::name` defaults to the function name.
 
@@ -154,7 +154,7 @@ pub fn component(args: TokenStream, item: TokenStream) -> TokenStream {
     if func.sig.asyncness.is_some() {
         return syn::Error::new(
             func.sig.asyncness.span(),
-            "#[component] functions are synchronous (see design.md §2.6); use ctx.run_blocking for work off the scheduling thread",
+            "#[component] functions are synchronous; use ctx.run_blocking for work off the scheduling thread",
         )
         .to_compile_error()
         .into();
@@ -176,7 +176,7 @@ pub fn component(args: TokenStream, item: TokenStream) -> TokenStream {
 
     // With `schema = <expr>`, the declared config schema rides along on
     // the adapter: install/update validate and resolve the config before
-    // the body ever runs (§6 item 4), with zero macro magic at runtime.
+    // the body ever runs, with zero macro magic at runtime.
     let schema_impl = attr_args.schema.as_ref().map(|expr| {
         quote! {
             fn schema(&self) -> Option<::yacordis::Schema> {

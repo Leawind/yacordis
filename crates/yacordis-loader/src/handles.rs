@@ -68,7 +68,7 @@ impl HandleTable {
         }
     }
 
-    /// Dispose-time audit (§4.1 I2, host half): remove every context
+    /// Dispose-time audit (I2, resource ownership — host half): remove every context
     /// handle bound to `fiber_id` and return how many were collected.
     /// `get_context` garbage-collects on sight; this closes the hole of
     /// handles never queried again after their fiber goes away.

@@ -3,7 +3,8 @@ language: Rust
 severity: error
 message: >
   Mutable statics survive reloads and are shared by two generations of the
-  component (§4.1 I3). Keep state in fiber-scoped resources registered through ctx.
+  component, violating the no-cross-install-state invariant (I3). Keep state
+  in fiber-scoped resources registered through ctx.
 rule:
   any:
     - pattern: "static mut $NAME: $TYPE = $INIT"

@@ -2,7 +2,7 @@
 
 This document records what yacordis keeps on purpose: the concept mapping to the paper and cordis v4, the intentional divergences, and the contract for binary component distribution (cdylib + C ABI).
 
-## 1. Concept Mapping (Paper ↔ v4 ↔ yacordis)
+## Concept Mapping (Paper ↔ v4 ↔ yacordis)
 
 | Paper concept                                            | cordis v4 (TS)                                                                  | yacordis                                                                                                                                                                                                                                         |
 | -------------------------------------------------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -12,32 +12,32 @@ This document records what yacordis keeps on purpose: the concept mapping to the
 | reactive coeffect resolution (spatially composable)      | fiber epoch: a signature keyed on fiber uids; changes drive `_reload`/`_unload` | `epoch: Option<Vec<u64>>` (sequence of provider fiber ids of required dependencies); `None` = dependencies missing; changes synchronously drive Reload/Unload via `refresh() → drive_ops()`                                                      |
 | component (effect + coeffect combined)                   | `Fiber` (component instance, six states)                                        | `Fiber` (four states: `Pending / Active / Failed / Disposed`)                                                                                                                                                                                    |
 | component install / remove                               | `ctx.component()` returns a thenable; `dispose()`                               | `ctx.component()/component_dyn()` returns a `FiberHandle`; `handle.dispose()` (idempotent)                                                                                                                                                       |
-| declarative plugin loader                                | `@cordisjs/loader` (config reconciliation, HMR)                                 | Milestone 2: `yacordis-loader` (cdylib + libloading, see §3)                                                                                                                                                                                     |
+| declarative plugin loader                                | `@cordisjs/loader` (config reconciliation, HMR)                                 | Milestone 2: `yacordis-loader` (cdylib + libloading, see "Binary Component Distribution")                                                                                                                                                        |
 
 In the synchronous world `LOADING`/`UNLOADING` complete immediately, so states collapse to four; the `internal/status` event carries `(new state summary, old state)`, same as v4.
 
-## 2. Intentional Divergences from the TS Version
+## Intentional Divergences from the TS Version
 
 These are deliberate. Do not "fix" them back to v4 behavior.
 
 1. **Purely synchronous**: lifecycle signatures stay synchronous (a model choice); concurrency needs are handled by framework plumbing (`run_blocking`/`spawn_future`, drain-before-rollback), and the `serial` semantics is folded into `bail`; v4's fiber inertia corresponds to this implementation's `quiesce`/drain semantics.
 2. **Failed means rollback**: on a component body error (including panics, converted via `catch_unwind`) all effects collected by that install are rolled back immediately, in reverse order; the fiber enters `Failed` with the error kept until `update()`. "Failed means no side effects" honors the paper's promise of temporal composability. v4 keeps the collected disposers until the next unload instead — do not adopt that residual semantics in new failure paths.
 3. **Explicit service access**: always `ctx.get("name")` (corresponding to v4's traceable/shadow, mixin/accessor, callable service, `ctx.xxx` dynamic property, and other access forms).
-4. **Service visibility**: isolate keyed by `(name, label)` (notify isolated per group, event cascades do not cross groups); service intercept (layered override along the fiber chain, see §2.1); the `check` predicate as declarative schema gating (`ctx.provide_schema`, see §2.2). Config interception merge (`Config.merge`) and typed service custom `mergeIntercept` await later milestones.
+4. **Service visibility**: isolate keyed by `(name, label)` (notify isolated per group, event cascades do not cross groups); service intercept (layered override along the fiber chain, see "Intercept — Rationale"); the `check` predicate as declarative schema gating (`ctx.provide_schema`, see "Service Value Validation — Rationale"). Config interception merge (`Config.merge`) and typed service custom `mergeIntercept` await later milestones.
 5. **Component identity** = the `Arc` data pointer (v4 uses the resolved function identity). Multiple installs of the same component value share a runtime entry; re-wrapping an `Arc` counts as a new component.
 6. Error chains are carried by the logger (corresponding to v4's `composeError` long-stack concatenation).
 7. `Service` base-class pattern → idiom: `ctx.provide(...)` inside the component body; the `#[component]` attribute macro (`yacordis-macros`); a Service-pattern macro awaits demand.
 8. The root fiber is installed and active immediately.
 
-### 2.1 Intercept — Rationale
+### Intercept — Rationale
 
 Intercept (upstream PR #90/#206) is layered per-context override of service config: layers are collected along the fiber ancestor chain of the requesting context, shallowly merged (`Object.assign` semantics), nearest wins, visible only to the registering fiber and its descendants. Registration is an effect (removed on fiber unload) and a pure view: it does not affect epoch, trigger notify, or reload providers. Typed services bypass it. Divergence from upstream: v4's `Service` class carries metadata and customizes `mergeIntercept`; here interception merging is carried by the JSON channel only.
 
-### 2.2 Service Value Validation — Rationale
+### Service Value Validation — Rationale
 
 `ctx.provide_schema(name, schema)` corresponds to upstream's `provide(name, service, check)`: a declarative schema gate validating every subsequent provide/set of a JSON service, reusing the config validation DSL. Registration is an effect; ownership is identified by schema node pointer equality. Typed services bypass it (the same trade-off as intercept). The duty of `resolveConfig` falls to schema defaults.
 
-## 3. Binary Component Distribution (cdylib + C ABI)
+## Binary Component Distribution (cdylib + C ABI)
 
 Hard requirement: components are distributed as prebuilt cdylibs, installed by users from the internet or files while the host stays running. The C ABI (`yacordis-component-api`, `ABI_VERSION = 4`) is the boundary, keeping component artifacts independent of the host's rustc/dependency versions.
 
@@ -50,7 +50,7 @@ Hard requirement: components are distributed as prebuilt cdylibs, installed by u
 
 What core provides for this: a uniform `Arc<dyn Component>` shape (`component_dyn`), a Value-first dynamic carrier, and lock-free reentrancy (installing/providing/on inside FFI callbacks is safe). **Boundary limits (intentional)**: service values across the ABI are `serde_json::Value` (typed downcast is native-only).
 
-### 3.1 Unloading Limitation Contract (Component Spec Invariants)
+### Unloading Limitation Contract (Component Spec Invariants)
 
 "Clean unloading" has three layers: ① **semantically clean** (everything registered through the framework is provably reclaimed) — guaranteed by the effect collection structure; ② **code clean** (code pages valid throughout) — carried by verified unload: the mapping is revoked only after the host proves no component code can ever run again (process quiescence, the in-flight gate at zero, every adapter of the library released); a failed proof keeps the library mapped; ③ **process clean** (no accumulated residue in long-running processes) — relies on the component author honoring these three invariants:
 
@@ -60,7 +60,7 @@ What core provides for this: a uniform `Arc<dyn Component>` shape (`component_dy
 
 Enforcement: I1 by ABI structure (entry only via vtable) + lints; I2 host half by runtime assertions in the dispose audit, component half by lint profile (the `build_and_load` path holds the sources so it can be mechanically enforced; prebuilt binary distribution degrades to trusting the publisher); I3 by lints. What the host can see, unload refuses: in-flight component code and undisposed fibers turn into refusals naming the violation point, and a refused unload keeps the library mapped — keep-mapped is the backstop so anything that refuses to prove itself quiet degrades at worst to memory leaks. An invisible I1 violation (raw threads running component code that never passes back through the framework) cannot be detected by the host, and unloading such a binary is undefined behavior — which is why unload requires trust, not just the runtime audit. Subprocesses are the compliant escape hatch for CPU parallelism and fault isolation — process death is the only perfect unloading.
 
-### 3.2 The Invariants in Code Terms (For Plugin Authors)
+### The Invariants in Code Terms (For Plugin Authors)
 
 What I1–I3 mean at the keyboard — the bundled lints catch the mechanical parts at build time; the runtime refusal audit is the remainder:
 
@@ -70,7 +70,7 @@ What I1–I3 mean at the keyboard — the bundled lints catch the mechanical par
 
 With all three honored, the lifecycle `install → use → dispose → unload` returns the process to the state before the load: the binary is unmapped and its file writable again. The unload tests (`crates/yacordis-loader/tests/unload.rs`) pin both this happy path and the refusal paths.
 
-## 4. Accepted Debt
+## Accepted Debt
 
 Known limitations accepted in the current design:
 

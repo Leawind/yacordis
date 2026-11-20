@@ -1,4 +1,4 @@
-# ast-grep configuration for the unload restriction contract (§4.1).
+# ast-grep configuration for the unloading contract's invariants.
 # Point `ast-grep scan` at a component's source tree; findings are
 # contract violations that keep uninstall from being provably clean.
 

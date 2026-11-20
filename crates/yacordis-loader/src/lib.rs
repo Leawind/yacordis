@@ -44,7 +44,7 @@
 //! degrades at worst to a memory leak, never to a crash.
 //!
 //! The proof is the component author's responsibility to make possible.
-//! The invariants of `docs/design.md` §3.1, in code terms:
+//! The contract's invariants, in code terms:
 //!
 //! - **I1 (single scheduling domain)** — only run code when the framework
 //!   calls you (`apply`, effect setups, listeners, work callbacks,
@@ -93,7 +93,7 @@ pub use registry::{
 /// Re-export of the ABI crate so hosts and components can agree on types.
 pub use yacordis_component_api as abi;
 
-/// Dispose-time audit hook (§4.1 I2, host half): collect every context
+/// Dispose-time audit hook (I2, resource ownership — host half): collect every context
 /// handle bound to `fiber_id`. Exposed for tests and host tooling.
 #[doc(hidden)]
 pub fn audit_fiber_handles(fiber_id: u64) -> usize {

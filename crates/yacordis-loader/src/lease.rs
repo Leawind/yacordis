@@ -35,7 +35,7 @@ use crate::adapter::FfiComponent;
 pub enum UnloadError {
     /// Component code of this library is still executing: an in-flight
     /// framework call that has not been drained yet, or a call that
-    /// escaped the framework scheduling domain (a §3.1 I1 violation).
+    /// escaped the framework scheduling domain (an I1 violation).
     /// Names the call kinds and their counts.
     InFlight {
         /// e.g. `["work × 1"]`.

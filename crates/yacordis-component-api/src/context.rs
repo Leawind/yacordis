@@ -176,7 +176,7 @@ impl Context {
         unsafe { ((*self.env).log)(level as i32, target, message_buf) };
     }
 
-    /// Run blocking work on a framework thread (§4.1 I1: work is
+    /// Run blocking work on a framework thread (I1, single scheduling domain: work is
     /// framework plumbing). The unit is an effect of this context's
     /// fiber: unload cancels and joins it before rolling back, so
     /// `work` must poll the token for timely unloads. `on_done` is

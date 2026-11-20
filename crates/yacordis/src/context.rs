@@ -417,7 +417,7 @@ impl Context {
         self.set_raw(name, value as Arc<dyn Any + Send + Sync>)
     }
 
-    /// Set an intercept override for a JSON service (§2.7): JSON values
+    /// Set an intercept override for a JSON service: JSON values
     /// resolved through this context are merged with the intercept
     /// layers along the fiber chain, the nearest fiber winning
     /// (shallow object merge, non-object layers replace). The entry is

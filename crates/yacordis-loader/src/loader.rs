@@ -77,8 +77,7 @@ pub struct ComponentManifest {
 /// install of this [`ComponentLibrary`] shares the same mapped binary and
 /// can be disposed and reinstalled independently. Once every fiber is
 /// disposed, [`ComponentLibrary::unload`] unmaps it for real — or refuses
-/// and degrades to keep-mapped when the quiet state cannot be proven (see
-/// `docs/design.md` §3.1 for the contract).
+/// and degrades to keep-mapped when the quiet state cannot be proven.
 pub struct ComponentLibrary {
     lease: Arc<LibraryLease>,
     /// Parsed from the component's exported manifest.
@@ -198,7 +197,7 @@ impl ComponentLibrary {
     ///
     /// 1. no component code in flight anywhere (in-flight framework calls
     ///    count too — dispose drains them; a call that escaped the
-    ///    framework is a §3.1 I1 violation);
+    ///    framework is an I1 violation);
     /// 2. no fiber installed from this library is left undisposed;
     /// 3. no component instance is held outside the library's own adapter.
     ///
@@ -216,7 +215,7 @@ impl ComponentLibrary {
     /// A component that invisibly violates I1 (raw threads running its own
     /// code without framework mediation) cannot be detected by the host;
     /// unloading such a binary is undefined behavior. Unload only
-    /// lint-clean components you trust — see `docs/design.md` §3.1.
+    /// lint-clean components you trust.
     pub fn unload(&self) -> Result<(), UnloadError> {
         if self.lease.is_closed() {
             return Ok(());
@@ -272,7 +271,7 @@ pub struct BuildOptions {
     pub offline: bool,
     /// Override the cargo target directory.
     pub target_dir: Option<PathBuf>,
-    /// Run the ast-grep unload-contract lint (§4.1) over the source tree
+    /// Run the ast-grep unload-contract lint over the source tree
     /// before building; findings reject the build. Silently skipped when
     /// ast-grep is not installed or the bundled rules are unavailable.
     pub lint: bool,
@@ -281,8 +280,8 @@ pub struct BuildOptions {
 /// Entry points for obtaining [`ComponentLibrary`] binaries.
 pub struct Loader;
 
-/// The bundled ast-grep configuration for the unload-contract rules
-/// (§4.1), embedded at compile time and materialized to a temporary
+/// The bundled ast-grep configuration for the unload-contract rules,
+/// embedded at compile time and materialized to a temporary
 /// tree when the lint runs — the crate carries no build-machine paths,
 /// so host binaries embedding these strings stay distributable.
 const LINT_SGCONFIG: &str = include_str!("../ast-grep-rules/sgconfig.yml");

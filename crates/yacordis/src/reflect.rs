@@ -156,7 +156,7 @@ pub(crate) fn resolve_value(
     apply_intercepts(ctx, name, base)
 }
 
-/// Register an intercept override on the current fiber (§2.7). The
+/// Register an intercept override on the current fiber. The
 /// entry is an effect: unloading the fiber removes it, keeping I2's
 /// provable cleanup. Only JSON services observe intercepts.
 pub(crate) fn set_intercept(
@@ -280,7 +280,7 @@ fn collect_intercepts(ctx: &Context, name: &str) -> Vec<Value> {
     values
 }
 
-/// Intercept view (§2.7, upstream PR #90/#206 adapted): JSON services
+/// Intercept view (upstream PR #90/#206 adapted): JSON services
 /// are merged with the intercept layers along the fiber chain, nearest
 /// fiber winning. Objects merge shallowly (Object.assign semantics);
 /// a non-object layer replaces the result entirely. Typed services are

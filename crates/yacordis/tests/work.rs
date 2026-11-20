@@ -1,4 +1,4 @@
-//! Framework-mediated concurrency (§4.1 I1): work units are framework
+//! Framework-mediated concurrency (I1, single scheduling domain): work units are framework
 //! plumbing — registered as effects, drained (cancel + join) before
 //! rollback, completion delivered as framework-initiated calls.
 

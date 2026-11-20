@@ -67,7 +67,7 @@
 //! # }
 //! ```
 //!
-//! # The concurrency substrate (§ design.md 2.6)
+//! # The concurrency substrate
 //!
 //! Blocking or async work never blocks the scheduling domain: submit it
 //! through the framework, and unload drains it before rolling back.
@@ -131,10 +131,6 @@
 //! # }
 //! # demo().unwrap();
 //! ```
-//!
-//! See `docs/design.md` in the repository for the concept mapping from
-//! the paper / cordis v4 to this crate, and for the list of deliberate
-//! divergences.
 
 #![deny(missing_docs)]
 

@@ -1,5 +1,5 @@
-//! Framework-mediated concurrency (§4.1 I1: async as plumbing, never a
-//! second scheduling domain).
+//! Framework-mediated concurrency (I1, single scheduling domain: async as
+//! plumbing, never a second scheduling domain).
 //!
 //! Two work-unit forms, both fully owned by the framework:
 //!
@@ -397,8 +397,7 @@ pub(crate) struct Executor {
 
 impl Executor {
     /// Start the executor thread. It holds an `Arc<Core>`, so the core
-    /// (and the executor) live until process exit — the same
-    /// keep-mapped honesty as loaded component code.
+    /// (and the executor) live until process exit.
     fn start(core: Arc<Core>) -> Executor {
         let inner = Arc::new(ExecInner {
             ready: Mutex::new(ExecState {

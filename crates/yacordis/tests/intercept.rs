@@ -1,4 +1,4 @@
-//! Service intercepts (§2.7): config-layered overrides along the fiber
+//! Service intercepts: config-layered overrides along the fiber
 //! chain, upstream PR #90/#206 semantics.
 
 use std::sync::Arc;

@@ -84,7 +84,7 @@ fn component_macro_provides_feed_cycle_diagnostics() {
     assert_eq!(cycles[0].len(), 2, "both members reported");
 }
 
-/// Locks the macro → `Component::schema` wiring (§6 item 4).
+/// Locks the macro → `Component::schema` wiring (see `yacordis::schema`).
 #[test]
 fn component_macro_schema_gates_install_and_update() {
     let ctx = Context::new();

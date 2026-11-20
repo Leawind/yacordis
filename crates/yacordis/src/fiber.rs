@@ -159,7 +159,7 @@ pub(crate) struct Fiber {
     /// The isolation group map this fiber was installed under.
     #[allow(dead_code)] // read via contexts; kept for scope introspection
     pub(crate) isolate: Arc<crate::context::IsolateMap>,
-    /// Service intercept overrides (§2.7): name → JSON value, merged
+    /// Service intercept overrides: name → JSON value, merged
     /// nearest-fiber-first over the provided base at resolution time.
     /// Entries are effects; unload removes them.
     pub(crate) intercepts: Arc<Mutex<HashMap<String, Value>>>,
@@ -618,7 +618,7 @@ impl Fiber {
             inner.unloading = true;
             std::mem::take(&mut inner.batches)
         };
-        // Drain-before-rollback (§4.1 I1): no component code may run
+        // Drain-before-rollback (I1, single scheduling domain): no component code may run
         // concurrently with the disposers below.
         crate::work::drain_fiber_works(self);
         lifecycle_trace::trace("unload-enter", self);
