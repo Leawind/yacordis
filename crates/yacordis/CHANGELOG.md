@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Lifecycle tracing records only in debug builds, or when `YACORDIS_LIFECYCLE_TRACE` is set: its per-fiber ring otherwise retains a bucket for every fiber a long-lived release process ever installed.
+
+### Fixed
+
+- A dropped runtime is collectable: a fiber no longer stores its `Context`, which made `Core → Fiber → Context → Core` an `Arc` cycle and leaked one runtime per `Context::new()`.
+- A disposed fiber retires its cascade entry on the parent, and effect batches drop spent entries: reinstalling a component no longer accumulates one entry per cycle.
+
 ## [0.2.0] - 2026-11-20
 
 ### Added

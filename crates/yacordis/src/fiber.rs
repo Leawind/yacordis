@@ -9,7 +9,7 @@
 
 use std::any::Any;
 use std::collections::HashMap;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 
 use serde_json::{Value, json};
@@ -48,8 +48,11 @@ impl FiberState {
 }
 
 /// Per-fiber lifecycle tracing for post-mortem diagnostics (stress
-/// tests). Lock discipline: this module never locks `Fiber::inner` —
-/// callers may already hold it, and the mutex is not re-entrant.
+/// tests). Disabled in release builds unless `YACORDIS_LIFECYCLE_TRACE`
+/// is set: the ring retains one bucket per fiber id, so a long-lived
+/// release process would pay for traces nobody reads.
+/// Lock discipline: this module never locks `Fiber::inner` — callers may
+/// already hold it, and the mutex is not re-entrant.
 pub(crate) mod lifecycle_trace {
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
@@ -59,12 +62,22 @@ pub(crate) mod lifecycle_trace {
 
     type Ring = Mutex<(HashMap<u64, Vec<String>>, usize)>;
 
+    fn enabled() -> bool {
+        static ENABLED: OnceLock<bool> = OnceLock::new();
+        *ENABLED.get_or_init(|| {
+            cfg!(debug_assertions) || std::env::var_os("YACORDIS_LIFECYCLE_TRACE").is_some()
+        })
+    }
+
     fn ring() -> &'static Ring {
         static RING: OnceLock<Ring> = OnceLock::new();
         RING.get_or_init(|| Mutex::new((HashMap::new(), 0)))
     }
 
     pub(crate) fn trace(event: &str, fiber: &super::Fiber) {
+        if !enabled() {
+            return;
+        }
         let tid = std::thread::current().id();
         let line = format!("T{tid:?} {event}");
         let mut guard = ring().lock().unwrap();
@@ -127,6 +140,10 @@ pub(crate) struct FiberInner {
     pub dep_store: HashMap<String, Arc<ServiceImpl>>,
     /// Effects owned by this fiber, disposed in reverse order.
     pub batches: Vec<EffectHandle>,
+    /// The effect that installs this fiber into its parent's cascade;
+    /// retired when the fiber disposes so the parent does not accumulate
+    /// spent entries.
+    pub disposal: Option<EffectHandle>,
     /// Services provided during the current body run, notified on
     /// activation.
     pub provided: Vec<(String, crate::context::IsolateLabel)>,
@@ -170,7 +187,10 @@ pub(crate) struct Fiber {
     pub parent: Option<Weak<Fiber>>,
     pub runtime: RwLock<Option<Arc<crate::registry::Runtime>>>,
     pub self_weak: OnceLock<Weak<Fiber>>,
-    pub ctx: OnceLock<Context>,
+    /// The runtime this fiber belongs to, weakly: a fiber must never keep
+    /// its `Core` alive (the core owns the root fiber, so a strong link
+    /// here would form a cycle no `Arc` can collect).
+    pub core: OnceLock<Weak<Core>>,
     pub inner: Mutex<FiberInner>,
     /// Serializes lifecycle ops on this fiber. `busy` + the deferred queue
     /// live under one lock so a racer can never push an op after the
@@ -253,6 +273,7 @@ fn fresh_inner(
         provides,
         dep_store: HashMap::new(),
         batches: Vec::new(),
+        disposal: None,
         provided: Vec::new(),
         works: Vec::new(),
         unloading: false,
@@ -260,15 +281,25 @@ fn fresh_inner(
     }
 }
 
+/// Temporary diagnostics: live `Fiber` allocations.
+pub(crate) static LIVE_FIBERS: AtomicUsize = AtomicUsize::new(0);
+
+impl Drop for Fiber {
+    fn drop(&mut self) {
+        LIVE_FIBERS.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 impl Fiber {
     pub(crate) fn new_root() -> Arc<Fiber> {
+        LIVE_FIBERS.fetch_add(1, Ordering::Relaxed);
         Arc::new_cyclic(|weak| Fiber {
             id: 0,
             name: "root".into(),
             parent: None,
             runtime: RwLock::new(None),
             self_weak: OnceLock::from(weak.clone()),
-            ctx: OnceLock::new(),
+            core: OnceLock::new(),
             inner: Mutex::new(fresh_inner(
                 FiberState::Active,
                 Value::Null,
@@ -292,13 +323,14 @@ impl Fiber {
     ) -> Arc<Fiber> {
         let inject = component.inject();
         let provides = component.provides();
-        Arc::new_cyclic(|weak| Fiber {
+        LIVE_FIBERS.fetch_add(1, Ordering::Relaxed);
+        let fiber = Arc::new_cyclic(|weak| Fiber {
             id: core.next_fiber_id(),
             name,
             parent: Some(parent),
             runtime: RwLock::new(None),
             self_weak: OnceLock::from(weak.clone()),
-            ctx: OnceLock::new(),
+            core: OnceLock::new(),
             inner: Mutex::new(fresh_inner(
                 FiberState::Pending,
                 config,
@@ -309,7 +341,9 @@ impl Fiber {
             schedule: Mutex::new(ScheduleState::default()),
             isolate,
             intercepts: Arc::new(Mutex::new(HashMap::new())),
-        })
+        });
+        let _ = fiber.core.set(Arc::downgrade(core));
+        fiber
     }
 
     pub fn id(&self) -> u64 {
@@ -321,10 +355,21 @@ impl Fiber {
         &self.name
     }
 
-    pub(crate) fn ctx(&self) -> &Context {
-        self.ctx
+    /// A context scoped to this fiber.
+    ///
+    /// Built on demand: storing one would keep the `Core` alive from the
+    /// fiber, and the core owns the root fiber — an `Arc` cycle.
+    pub(crate) fn ctx(&self) -> Context {
+        let core = self
+            .core
             .get()
-            .expect("fiber context initialized after install")
+            .and_then(Weak::upgrade)
+            .expect("a live fiber has its runtime");
+        Context {
+            core,
+            fiber: self.self_weak.get().cloned().unwrap_or_default(),
+            isolate: self.isolate.clone(),
+        }
     }
 
     pub(crate) fn strong(&self) -> Arc<Fiber> {
@@ -369,6 +414,9 @@ impl Fiber {
             if inner.disposed || inner.unloading {
                 true
             } else {
+                // Spent entries are dead weight: an effect disposed early
+                // keeps its slot otherwise until the fiber unloads.
+                inner.batches.retain(|batched| batched.is_alive());
                 inner.batches.push(handle.clone());
                 false
             }
@@ -686,13 +734,21 @@ impl Fiber {
     /// withdrawal happens inside the provide-disposers, cascading to
     /// dependent fibers before we finish.
     pub(crate) fn dispose(self: &Arc<Fiber>, core: &Arc<Core>) -> bool {
-        {
+        let disposal = {
             let mut inner = self.inner.lock().unwrap();
             if inner.disposed || inner.unloading {
                 return false;
             }
             inner.disposed = true;
             inner.error = None;
+            inner.disposal.take()
+        };
+        // Retire the parent's cascade entry now: the parent would otherwise
+        // hold this fiber's disposal effect until it unloads, leaking one
+        // entry per install/dispose cycle. The disposer re-enters dispose,
+        // which returns early above.
+        if let Some(handle) = disposal {
+            handle.dispose();
         }
         lifecycle_trace::trace("dispose", self);
         events::emit_component(core, self);

@@ -205,6 +205,22 @@ pub mod test_support {
     pub fn lifecycle_trace_fiber(id: u64) -> Vec<String> {
         crate::fiber::lifecycle_trace::dump_fiber(id)
     }
+
+    /// Live `(Core, Fiber)` allocations: residue tests assert these return
+    /// to their baseline after the lifecycle they exercise.
+    pub fn live_objects() -> (usize, usize) {
+        (
+            crate::context::LIVE_CORES.load(std::sync::atomic::Ordering::Relaxed),
+            crate::fiber::LIVE_FIBERS.load(std::sync::atomic::Ordering::Relaxed),
+        )
+    }
+
+    /// Effect batches the context's own fiber holds. A disposed child must
+    /// not leave a spent batch behind on a parent that outlives it.
+    pub fn effect_batches(ctx: &crate::Context) -> usize {
+        let root = &ctx.core.root;
+        root.inner.lock().unwrap().batches.len()
+    }
 }
 
 /// Ergonomic imports for typical hosts and components.

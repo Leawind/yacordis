@@ -9,7 +9,7 @@
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use serde_json::Value;
@@ -98,8 +98,18 @@ pub(crate) struct Core {
     pub(crate) work: crate::work::WorkRegistry,
 }
 
+/// Temporary diagnostics: live `Core` allocations.
+pub(crate) static LIVE_CORES: AtomicUsize = AtomicUsize::new(0);
+
+impl Drop for Core {
+    fn drop(&mut self) {
+        LIVE_CORES.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 impl Core {
     fn new() -> Arc<Core> {
+        LIVE_CORES.fetch_add(1, Ordering::Relaxed);
         let root = Fiber::new_root();
         let core = Arc::new(Core {
             hook_sn: AtomicU64::new(1),
@@ -113,11 +123,7 @@ impl Core {
             service_schemas: Mutex::new(HashMap::new()),
             work: crate::work::WorkRegistry::default(),
         });
-        let _ = root.ctx.set(Context {
-            core: core.clone(),
-            fiber: Arc::downgrade(&root),
-            isolate: Arc::new(IsolateMap::default()),
-        });
+        let _ = root.core.set(Arc::downgrade(&core));
         core
     }
 
@@ -166,18 +172,6 @@ impl Context {
             fiber: Arc::downgrade(&core.root),
             core,
             isolate: Arc::new(IsolateMap::default()),
-        }
-    }
-
-    pub(crate) fn for_fiber(
-        core: &Arc<Core>,
-        fiber: &Arc<Fiber>,
-        isolate: Arc<IsolateMap>,
-    ) -> Context {
-        Context {
-            core: core.clone(),
-            fiber: Arc::downgrade(fiber),
-            isolate,
         }
     }
 
@@ -297,9 +291,6 @@ impl Context {
             name,
         );
         *fiber.runtime.write().unwrap() = Some(runtime.clone());
-        let _ = fiber
-            .ctx
-            .set(Context::for_fiber(&self.core, &fiber, self.isolate.clone()));
         runtime.fibers.lock().unwrap().push(fiber.clone());
         // Index the declared injects before the body runs: notifies
         // fired during the body must find this fiber.
@@ -314,6 +305,10 @@ impl Context {
         // another component body.
         let handle = EffectHandle::new("ctx.component()");
         handle.push(disposal_disposer(&fiber));
+        // The child keeps its own disposal effect, so disposing the child
+        // directly retires the parent's cascade entry instead of leaving a
+        // spent entry behind for as long as the parent lives.
+        fiber.inner.lock().unwrap().disposal = Some(handle.clone());
         attach_effect(&parent, handle);
 
         fiber.run_install_effect(&self.core);
@@ -818,9 +813,10 @@ impl FiberHandle {
                 fiber: Some(fiber.name.clone()),
             });
         }
+        let fiber_ctx = fiber.ctx();
         let config = events::waterfall(
-            &fiber.ctx().core,
-            fiber.ctx(),
+            &fiber_ctx.core,
+            &fiber_ctx,
             events::INTERNAL_UPDATE,
             config.into(),
             Box::new(std::convert::identity),
