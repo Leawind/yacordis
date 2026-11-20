@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-21
+
 ### Changed
 
 - Lifecycle tracing records only in debug builds, or when `YACORDIS_LIFECYCLE_TRACE` is set: its per-fiber ring otherwise retains a bucket for every fiber a long-lived release process ever installed.
