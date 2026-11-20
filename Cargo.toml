@@ -16,8 +16,8 @@ rust-version = "1.85"
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-yacordis = { path = "crates/yacordis", version = "0.1.0" }
-yacordis-component-api = { path = "crates/yacordis-component-api", version = "0.1.0" }
+yacordis = { path = "crates/yacordis", version = "0.1.1" }
+yacordis-component-api = { path = "crates/yacordis-component-api", version = "0.1.1" }
 
 [profile.dev]
 debug = 1
