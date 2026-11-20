@@ -83,3 +83,101 @@ fn sink_removal_and_service_withdrawal() {
     assert!(ctx.logger().is_none());
     ctx.log_info("no service, no crash");
 }
+
+#[test]
+fn scoped_level_restores_on_fiber_unload() {
+    let ctx = Context::new();
+    ctx.set_logger(Arc::new(yacordis::DiscardLogger));
+    ctx.component(LoggerComponent, json!(null))
+        .expect("install logger");
+
+    let mutator = ctx
+        .component(
+            |ctx: &Context, _: &Value| -> ComponentResult {
+                ctx.set_scoped_level(Some(LogLevel::Debug))
+                    .map_err(ComponentError::new)?;
+                Ok(())
+            },
+            json!(null),
+        )
+        .expect("install mutator");
+
+    let service = ctx.logger().expect("logger service");
+    assert_eq!(service.level(), Some(LogLevel::Debug));
+
+    mutator.dispose();
+    assert_eq!(
+        service.level(),
+        None,
+        "unloading the mutator restores the previous threshold"
+    );
+}
+
+#[test]
+fn scoped_sink_is_removed_with_its_fiber() {
+    let ctx = Context::new();
+    ctx.set_logger(Arc::new(yacordis::DiscardLogger));
+    ctx.component(LoggerComponent, json!(null))
+        .expect("install logger");
+    let service = ctx.logger().expect("logger service");
+
+    let memory = Arc::new(MemorySink::new());
+    let memory_for_body = memory.clone();
+    let owner = ctx
+        .component(
+            move |ctx: &Context, _: &Value| -> ComponentResult {
+                // The handle is dropped immediately: the scope release is
+                // carried by the effect, not by the handle.
+                let _ = ctx.add_scoped_arc_sink(memory_for_body.clone());
+                Ok(())
+            },
+            json!(null),
+        )
+        .expect("install sink owner");
+    assert!(owner.is_active());
+
+    ctx.log_info("while installed");
+    assert_eq!(memory.records().len(), 1);
+
+    owner.dispose();
+    ctx.log_info("after unload");
+    assert_eq!(
+        memory.records().len(),
+        1,
+        "the sink left with its fiber even though the handle was dropped"
+    );
+}
+
+#[test]
+fn nested_scoped_levels_restore_in_reverse_order() {
+    let ctx = Context::new();
+    ctx.set_logger(Arc::new(yacordis::DiscardLogger));
+    ctx.component(LoggerComponent, json!(null))
+        .expect("install logger");
+    let service = ctx.logger().expect("logger service");
+
+    let outer = ctx
+        .component(
+            |ctx: &Context, _: &Value| -> ComponentResult {
+                ctx.set_scoped_level(Some(LogLevel::Warn))
+                    .map_err(ComponentError::new)?;
+                let inner = ctx.inject(Inject::none(), |ctx: &Context| {
+                    ctx.set_scoped_level(Some(LogLevel::Debug))
+                        .map_err(ComponentError::new)?;
+                    Ok(())
+                })?;
+                assert!(inner.is_active());
+                Ok(())
+            },
+            json!(null),
+        )
+        .expect("install outer");
+
+    assert_eq!(service.level(), Some(LogLevel::Debug));
+    outer.dispose();
+    assert_eq!(
+        service.level(),
+        None,
+        "inner restore runs first, then the outer one"
+    );
+}

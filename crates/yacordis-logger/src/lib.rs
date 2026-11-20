@@ -143,12 +143,28 @@ impl LoggerService {
     }
 
     /// Set the minimum level; `None` restores the default (`Info`).
+    ///
+    /// The change is a plain mutation of the shared service and is not
+    /// reverted by any fiber unload — hosts use this directly; components
+    /// use [`LoggerContextExt::set_scoped_level`], which restores the
+    /// previous threshold when the calling fiber unloads.
     pub fn set_level(&self, level: Option<LogLevel>) {
         *self.min_level.write().unwrap() = level;
     }
 
+    /// The current minimum level; `None` means the default (`Info`).
+    #[must_use]
+    pub fn level(&self) -> Option<LogLevel> {
+        *self.min_level.read().unwrap()
+    }
+
     /// Register a sink (on an `Arc`'d service); returns a handle that
     /// removes it when disposed.
+    ///
+    /// Registration is not tracked by any fiber scope: the sink stays
+    /// registered until the handle is disposed or the service dies.
+    /// Components use [`LoggerContextExt::add_scoped_sink`], which removes
+    /// the sink automatically when the calling fiber unloads.
     pub fn add_sink(self: &Arc<Self>, sink: impl LogSink) -> SinkHandle {
         self.add_arc_sink(Arc::new(sink))
     }
@@ -184,6 +200,7 @@ impl LoggerService {
 }
 
 /// Handle that removes a sink when disposed (idempotent).
+#[derive(Clone)]
 pub struct SinkHandle {
     service: Weak<LoggerService>,
     id: u64,
@@ -229,6 +246,19 @@ pub trait LoggerContextExt {
     fn log_debug(&self, message: &str) {
         self.log(LogLevel::Debug, message);
     }
+
+    /// Set the level threshold scoped to the current fiber: the previous
+    /// threshold is restored when the fiber unloads (an effect, so the
+    /// change composes with nesting and reverts in reverse order).
+    fn set_scoped_level(&self, level: Option<LogLevel>) -> Result<(), String>;
+
+    /// Register a sink scoped to the current fiber: removed automatically
+    /// when the fiber unloads. The returned handle removes it early.
+    fn add_scoped_sink(&self, sink: impl LogSink) -> Result<SinkHandle, String>;
+
+    /// Register an already-shared sink scoped to the current fiber:
+    /// removed automatically when the fiber unloads.
+    fn add_scoped_arc_sink(&self, sink: Arc<dyn LogSink>) -> Result<SinkHandle, String>;
 }
 
 impl LoggerContextExt for Context {
@@ -242,6 +272,46 @@ impl LoggerContextExt for Context {
         };
         let scope = self.fiber().name().unwrap_or_else(|| "root".to_owned());
         service.log(level, &scope, message);
+    }
+
+    fn set_scoped_level(&self, level: Option<LogLevel>) -> Result<(), String> {
+        let service = self
+            .logger()
+            .ok_or_else(|| "yacordis-logger: logger service not available".to_owned())?;
+        let previous = service.level();
+        // The restore effect is registered before the change is applied,
+        // so a failing registration leaves the threshold untouched.
+        let restore = service.clone();
+        self.effect("logger/level", move |_| {
+            let disposer: yacordis::Disposer = Box::new(move || restore.set_level(previous));
+            Ok(Some(disposer))
+        })
+        .map_err(|e| e.to_string())?;
+        service.set_level(level);
+        Ok(())
+    }
+
+    fn add_scoped_sink(&self, sink: impl LogSink) -> Result<SinkHandle, String> {
+        self.add_scoped_arc_sink(Arc::new(sink))
+    }
+
+    fn add_scoped_arc_sink(&self, sink: Arc<dyn LogSink>) -> Result<SinkHandle, String> {
+        let service = self
+            .logger()
+            .ok_or_else(|| "yacordis-logger: logger service not available".to_owned())?;
+        let handle = service.add_arc_sink(sink);
+        // The removal is an effect of the calling fiber: unload reverts
+        // the registration even when the handle itself was dropped.
+        let remove = handle.clone();
+        if let Err(error) = self.effect("logger/sink", move |_| {
+            let remove = remove.clone();
+            let disposer: yacordis::Disposer = Box::new(move || remove.remove());
+            Ok(Some(disposer))
+        }) {
+            handle.remove();
+            return Err(error.to_string());
+        }
+        Ok(handle)
     }
 }
 
