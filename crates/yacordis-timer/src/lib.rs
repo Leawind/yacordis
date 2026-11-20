@@ -32,9 +32,9 @@
 
 #![deny(missing_docs)]
 
+use std::cell::Cell;
 use std::cmp::Ordering as CmpOrdering;
 use std::collections::BinaryHeap;
-use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};

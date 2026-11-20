@@ -216,9 +216,10 @@ fn effect_failure_leaves_nothing_scheduled() {
                 let ctx_for_disposer = ctx.clone();
                 ctx.effect("victim", move |_| {
                     let disposer: Disposer = Box::new(move || {
-                        let _ = ctx_for_disposer.set_timeout(Duration::from_millis(50), move || {
-                            let _ = tx.send("orphan fired");
-                        });
+                        let _ =
+                            ctx_for_disposer.set_timeout(Duration::from_millis(50), move || {
+                                let _ = tx.send("orphan fired");
+                            });
                     });
                     Ok(Some(disposer))
                 })
@@ -230,7 +231,9 @@ fn effect_failure_leaves_nothing_scheduled() {
         .expect("install victim");
 
     victim.dispose();
-    assert!(!wait_until(Duration::from_millis(400), || rx.try_recv().is_ok()));
+    assert!(!wait_until(Duration::from_millis(400), || rx
+        .try_recv()
+        .is_ok()));
     timer_fiber.dispose();
 }
 

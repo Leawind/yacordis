@@ -50,13 +50,10 @@ impl HandleTable {
     /// fiber's context resolves nothing; a handle the component still
     /// holds (the value is `Copy`) keeps failing gracefully.
     pub(crate) fn sweep_dead_contexts(&self) {
-        self.map
-            .lock()
-            .unwrap()
-            .retain(|_, object| match object {
-                HostObject::Context(ctx) => ctx.fiber_alive(),
-                _ => true,
-            });
+        self.map.lock().unwrap().retain(|_, object| match object {
+            HostObject::Context(ctx) => ctx.fiber_alive(),
+            _ => true,
+        });
     }
 
     /// Look up a context handle. Entries whose fiber has been torn down

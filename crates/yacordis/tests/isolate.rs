@@ -198,7 +198,10 @@ fn service_events_stay_in_their_isolation_group() {
         "isolated service events do not cross the group boundary"
     );
     assert!(
-        seen_from_group.lock().unwrap().contains(&"database".to_owned()),
+        seen_from_group
+            .lock()
+            .unwrap()
+            .contains(&"database".to_owned()),
         "the group's own observer sees the event"
     );
 
@@ -207,21 +210,25 @@ fn service_events_stay_in_their_isolation_group() {
     seen_from_shared.lock().unwrap().clear();
     seen_from_group.lock().unwrap().clear();
     ctx.component_dyn(
-        Arc::new(
-            |ctx: &Context, _: &Value| -> ComponentResult {
-                ctx.provide("other", Arc::new(json!({})))?;
-                Ok(())
-            },
-        ),
+        Arc::new(|ctx: &Context, _: &Value| -> ComponentResult {
+            ctx.provide("other", Arc::new(json!({})))?;
+            Ok(())
+        }),
         json!(null),
     )
     .expect("shared provider");
     assert!(
-        seen_from_shared.lock().unwrap().contains(&"other".to_owned()),
+        seen_from_shared
+            .lock()
+            .unwrap()
+            .contains(&"other".to_owned()),
         "shared observers see shared-group events"
     );
     assert!(
-        seen_from_group.lock().unwrap().contains(&"other".to_owned()),
+        seen_from_group
+            .lock()
+            .unwrap()
+            .contains(&"other".to_owned()),
         "a group observer with no isolation for that name sees shared events"
     );
 }

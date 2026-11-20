@@ -83,8 +83,5 @@ fn dispose_and_unload_leave_no_stale_context_handles() {
 }
 
 fn file_is_writable(path: &Path) -> bool {
-    std::fs::OpenOptions::new()
-        .write(true)
-        .open(path)
-        .is_ok()
+    std::fs::OpenOptions::new().write(true).open(path).is_ok()
 }

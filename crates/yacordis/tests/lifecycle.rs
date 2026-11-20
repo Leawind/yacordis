@@ -784,14 +784,14 @@ fn dispose_all_reverts_in_reverse_installation_order() {
         let log = log.clone();
         Arc::new(move |ctx: &Context, _: &Value| -> ComponentResult {
             let log = log.clone();
-            ctx.effect(tag, move |_| {
-                Ok(Some(dispose_log(&log, tag)))
-            })?;
+            ctx.effect(tag, move |_| Ok(Some(dispose_log(&log, tag))))?;
             Ok(())
         })
     };
 
-    let first = ctx.component_dyn(make("first"), json!(null)).expect("first");
+    let first = ctx
+        .component_dyn(make("first"), json!(null))
+        .expect("first");
     let second = ctx
         .component_dyn(make("second"), json!(null))
         .expect("second");

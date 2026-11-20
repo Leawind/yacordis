@@ -379,7 +379,13 @@ pub(crate) fn emit_service(
     };
     let ctx = root_ctx(core);
     for listener in &listeners {
-        call(core, "yacordis/events", listener, &ctx, &json!([name, value]));
+        call(
+            core,
+            "yacordis/events",
+            listener,
+            &ctx,
+            &json!([name, value]),
+        );
     }
 }
 
