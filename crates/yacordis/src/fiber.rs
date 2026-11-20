@@ -281,7 +281,9 @@ fn fresh_inner(
     }
 }
 
-/// Temporary diagnostics: live `Fiber` allocations.
+/// Live `Fiber` allocations: residue tests assert this returns to its
+/// baseline after a lifecycle. The steady-state cost is one relaxed
+/// atomic increment and one decrement per fiber.
 pub(crate) static LIVE_FIBERS: AtomicUsize = AtomicUsize::new(0);
 
 impl Drop for Fiber {
@@ -367,7 +369,11 @@ impl Fiber {
             .expect("a live fiber has its runtime");
         Context {
             core,
-            fiber: self.self_weak.get().cloned().unwrap_or_default(),
+            fiber: self
+                .self_weak
+                .get()
+                .cloned()
+                .expect("a live fiber carries its own weak handle"),
             isolate: self.isolate.clone(),
         }
     }
@@ -415,7 +421,10 @@ impl Fiber {
                 true
             } else {
                 // Spent entries are dead weight: an effect disposed early
-                // keeps its slot otherwise until the fiber unloads.
+                // keeps its slot otherwise until the fiber unloads. Cordis
+                // deletes an entry from the parent's list at dispose time
+                // (`DisposableList.push` returns a cancel closure); this
+                // prune is that model's lazy variant.
                 inner.batches.retain(|batched| batched.is_alive());
                 inner.batches.push(handle.clone());
                 false

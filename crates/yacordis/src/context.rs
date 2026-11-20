@@ -98,7 +98,9 @@ pub(crate) struct Core {
     pub(crate) work: crate::work::WorkRegistry,
 }
 
-/// Temporary diagnostics: live `Core` allocations.
+/// Live `Core` allocations: residue tests assert this returns to its
+/// baseline after a lifecycle. The steady-state cost is one relaxed
+/// atomic increment and one decrement per runtime.
 pub(crate) static LIVE_CORES: AtomicUsize = AtomicUsize::new(0);
 
 impl Drop for Core {
