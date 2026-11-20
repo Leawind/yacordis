@@ -82,12 +82,14 @@
 #![deny(missing_docs)]
 
 mod adapter;
+mod digest;
 mod handles;
 mod lease;
 mod loader;
 mod registry;
 mod vtable;
 
+pub use digest::{sha256 as sha256_digest, sha256_hex};
 pub use lease::UnloadError;
 pub use loader::{
     BuildOptions, ComponentLibrary, ComponentManifest, LoadError, Loader, MaterializedArtifact,
@@ -95,7 +97,6 @@ pub use loader::{
 };
 pub use registry::{
     Constraint, Entry, RegistryError, RegistryIndex, Repository, Sha256Verifier, Verifier, Version,
-    sha256 as sha256_digest, sha256_hex,
 };
 
 /// Re-export of the ABI crate so hosts and components can agree on types.
