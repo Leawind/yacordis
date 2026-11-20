@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -197,4 +198,107 @@ fn disposing_the_timer_component_shuts_the_wheel_down() {
     timer_fiber.dispose();
     assert!(!ctx.has(yacordis_timer::TIMER_SERVICE));
     assert!(ctx.set_timeout(Duration::from_millis(1), || {}).is_err());
+}
+
+#[test]
+fn effect_failure_leaves_nothing_scheduled() {
+    let (ctx, timer_fiber) = install_timer();
+
+    // A disposer runs while its own fiber is unloading: the timer service
+    // is reachable, but registering an effect there fails. Scheduling must
+    // not have happened either, so nothing fires afterwards.
+    let (tx, rx) = mpsc::channel::<&'static str>();
+    let victim = ctx
+        .component(
+            move |ctx: &Context, _: &Value| -> ComponentResult {
+                let ctx = ctx.clone();
+                let tx = tx.clone();
+                let ctx_for_disposer = ctx.clone();
+                ctx.effect("victim", move |_| {
+                    let disposer: Disposer = Box::new(move || {
+                        let _ = ctx_for_disposer.set_timeout(Duration::from_millis(50), move || {
+                            let _ = tx.send("orphan fired");
+                        });
+                    });
+                    Ok(Some(disposer))
+                })
+                .map_err(ComponentError::new)?;
+                Ok(())
+            },
+            json!(null),
+        )
+        .expect("install victim");
+
+    victim.dispose();
+    assert!(!wait_until(Duration::from_millis(400), || rx.try_recv().is_ok()));
+    timer_fiber.dispose();
+}
+
+#[test]
+fn unload_waits_for_an_inflight_callback_before_rollback() {
+    let (ctx, timer_fiber) = install_timer();
+
+    let started = Arc::new(AtomicBool::new(false));
+    let finished = Arc::new(AtomicBool::new(false));
+    let rollback_ran = Arc::new(AtomicBool::new(false));
+
+    let started_for_body = started.clone();
+    let started_for_callback = started.clone();
+    let finished_for_callback = finished.clone();
+    let rollback_for_body = rollback_ran.clone();
+
+    let victim = ctx
+        .component(
+            move |ctx: &Context, _: &Value| -> ComponentResult {
+                // Registered first: its disposer runs after the timer's
+                // during the reverse-order rollback.
+                let flag = rollback_for_body.clone();
+                ctx.effect("rollback-marker", move |_| {
+                    let disposer: Disposer = Box::new(move || {
+                        flag.store(true, Ordering::SeqCst);
+                    });
+                    Ok(Some(disposer))
+                })
+                .map_err(ComponentError::new)?;
+                let started_cb = started_for_callback.clone();
+                let finished_cb = finished_for_callback.clone();
+                let started_body = started_for_body.clone();
+                ctx.set_interval(Duration::from_millis(20), move || {
+                    if !started_cb.swap(true, Ordering::SeqCst) {
+                        // First tick: stay in flight for a bit.
+                        std::thread::sleep(Duration::from_millis(150));
+                        finished_cb.store(true, Ordering::SeqCst);
+                    }
+                    let _ = started_body.load(Ordering::SeqCst);
+                })
+                .map_err(ComponentError::new)?;
+                Ok(())
+            },
+            json!(null),
+        )
+        .expect("install victim");
+
+    // Precondition: the callback is executing right now.
+    assert!(
+        wait_until(Duration::from_secs(2), || started.load(Ordering::SeqCst)),
+        "callback should be in flight"
+    );
+
+    let dispose_started = Instant::now();
+    victim.dispose();
+    let dispose_elapsed = dispose_started.elapsed();
+
+    assert!(
+        finished.load(Ordering::SeqCst),
+        "dispose must wait for the in-flight callback to return"
+    );
+    assert!(
+        rollback_ran.load(Ordering::SeqCst),
+        "rollback ran after the callback finished"
+    );
+    assert!(
+        dispose_elapsed >= Duration::from_millis(100),
+        "dispose blocked until the callback finished ({dispose_elapsed:?})"
+    );
+    timer_fiber.dispose();
 }

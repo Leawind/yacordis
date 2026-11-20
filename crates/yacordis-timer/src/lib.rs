@@ -34,7 +34,8 @@
 
 use std::cmp::Ordering as CmpOrdering;
 use std::collections::BinaryHeap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::cell::Cell;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -44,11 +45,27 @@ use yacordis::{Component, ComponentError, ComponentResult, Context, Disposer};
 /// The name under which [`TimerComponent`] provides [`TimerWheel`].
 pub const TIMER_SERVICE: &str = "timer";
 
+static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(1);
+
+thread_local! {
+    /// Id of the timer callback executing on this thread, if any. A drain
+    /// targeting the task running on the calling thread must skip waiting
+    /// (an unload triggered from inside a callback would wait for itself).
+    static TIMER_CURRENT: Cell<Option<u64>> = const { Cell::new(None) };
+}
+
 struct Task {
+    id: u64,
     cancelled: AtomicBool,
     callback: Mutex<Option<Box<dyn FnMut() + Send>>>,
     interval: Option<Duration>,
     done: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+    /// Whether the callback is executing on the wheel thread right now.
+    /// Unload waits for it to return before rolling back
+    /// (drain-before-rollback), so component code never runs
+    /// concurrently with disposers.
+    inflight: Mutex<bool>,
+    inflight_signal: Condvar,
 }
 
 impl Task {
@@ -57,6 +74,18 @@ impl Task {
         if let Some(sender) = self.done.lock().unwrap().take() {
             // Dropping the sender wakes a `sleep` waiting on this task.
             drop(sender);
+        }
+    }
+
+    /// Wait until this task's callback is no longer executing. Skipped
+    /// when the callback runs on the calling thread itself.
+    fn drain(&self) {
+        if TIMER_CURRENT.with(|cell| cell.get()) == Some(self.id) {
+            return;
+        }
+        let mut inflight = self.inflight.lock().unwrap();
+        while *inflight {
+            inflight = self.inflight_signal.wait(inflight).unwrap();
         }
     }
 }
@@ -165,17 +194,23 @@ impl TimerWheel {
                     due.push(entry.task.clone());
                 }
             }
-            // User code runs outside the lock.
+            // User code runs outside the lock, accounted as in flight so
+            // unload can drain it before rolling back.
             for task in due.drain(..) {
                 if task.cancelled.load(Ordering::SeqCst) {
                     continue;
                 }
+                TIMER_CURRENT.with(|cell| cell.set(Some(task.id)));
+                *task.inflight.lock().unwrap() = true;
                 {
                     let mut guard = task.callback.lock().unwrap();
                     if let Some(callback) = guard.as_mut() {
                         callback();
                     }
                 }
+                *task.inflight.lock().unwrap() = false;
+                task.inflight_signal.notify_all();
+                TIMER_CURRENT.with(|cell| cell.set(None));
                 if task.interval.is_none() {
                     // One-shot: release the callback and wake any sleeper.
                     task.callback.lock().unwrap().take();
@@ -256,7 +291,9 @@ pub trait TimerContextExt {
     fn timer_wheel(&self) -> Option<Arc<TimerWheel>>;
 
     /// Run `callback` once after `delay`; cancelled when the current
-    /// fiber unloads. Returns a manual cancel handle.
+    /// fiber unloads. Unloading waits for an in-flight callback to
+    /// return before rolling back, so the callback must not block
+    /// indefinitely. Returns a manual cancel handle.
     fn set_timeout<F: FnOnce() + Send + 'static>(
         &self,
         delay: Duration,
@@ -264,7 +301,9 @@ pub trait TimerContextExt {
     ) -> Result<CancelHandle, String>;
 
     /// Run `callback` every `period` until cancelled or the current
-    /// fiber unloads.
+    /// fiber unloads. Unloading waits for an in-flight callback to
+    /// return before rolling back, so the callback must not block
+    /// indefinitely.
     fn set_interval<F: Fn() + Send + Sync + 'static>(
         &self,
         period: Duration,
@@ -296,6 +335,7 @@ impl TimerContextExt for Context {
         };
         let mut callback = Some(callback);
         let task = Arc::new(Task {
+            id: NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed),
             cancelled: AtomicBool::new(false),
             callback: Mutex::new(Some(Box::new(move || {
                 if let Some(callback) = callback.take() {
@@ -304,19 +344,24 @@ impl TimerContextExt for Context {
             }))),
             interval: None,
             done: Mutex::new(None),
+            inflight: Mutex::new(false),
+            inflight_signal: Condvar::new(),
         });
-        wheel.schedule(delay, task.clone());
-        // The timer is an effect of this fiber: unload cancels it.
+        // The effect comes first: a failing registration (the fiber going
+        // away) leaves nothing scheduled. The disposer cancels pending
+        // firings and waits for an in-flight callback to return before the
+        // rollback continues — no component code runs concurrently with
+        // disposers.
         let effect_task = task.clone();
-        let effect_wheel = wheel.clone();
         self.effect("timer/timeout", move |_| {
             let disposer: Disposer = Box::new(move || {
                 effect_task.cancel();
-                effect_wheel.signal.notify_all();
+                effect_task.drain();
             });
             Ok(Some(disposer))
         })
         .map_err(|e| e.to_string())?;
+        wheel.schedule(delay, task.clone());
         Ok(CancelHandle { task })
     }
 
@@ -329,22 +374,25 @@ impl TimerContextExt for Context {
             return Err("yacordis-timer: timer service not available".into());
         };
         let task = Arc::new(Task {
+            id: NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed),
             cancelled: AtomicBool::new(false),
             callback: Mutex::new(Some(Box::new(callback))),
             interval: Some(period),
             done: Mutex::new(None),
+            inflight: Mutex::new(false),
+            inflight_signal: Condvar::new(),
         });
-        wheel.schedule(period, task.clone());
+        // Same discipline as `set_timeout`: effect first, schedule after.
         let effect_task = task.clone();
-        let effect_wheel = wheel.clone();
         self.effect("timer/interval", move |_| {
             let disposer: Disposer = Box::new(move || {
                 effect_task.cancel();
-                effect_wheel.signal.notify_all();
+                effect_task.drain();
             });
             Ok(Some(disposer))
         })
         .map_err(|e| e.to_string())?;
+        wheel.schedule(period, task.clone());
         Ok(CancelHandle { task })
     }
 
@@ -354,10 +402,13 @@ impl TimerContextExt for Context {
         };
         let (sender, receiver) = std::sync::mpsc::channel::<()>();
         let task = Arc::new(Task {
+            id: NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed),
             cancelled: AtomicBool::new(false),
             callback: Mutex::new(None),
             interval: None,
             done: Mutex::new(Some(sender)),
+            inflight: Mutex::new(false),
+            inflight_signal: Condvar::new(),
         });
         wheel.schedule(delay, task.clone());
         // Tie the sleep to this fiber as an effect: unloading the fiber
